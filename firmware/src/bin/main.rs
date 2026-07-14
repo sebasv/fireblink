@@ -59,7 +59,7 @@ fn main() -> ! {
         },
     ];
     let mut grid = Grid::builder(&mut points)
-        .seed(Seed::Acorn)
+        .seed(Seed::RPentomino)
         .palette(Palette::Fire)
         .tint_by_field(true)
         .build();
