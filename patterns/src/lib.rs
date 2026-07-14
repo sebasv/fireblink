@@ -4,6 +4,7 @@
 #[macro_use]
 extern crate approx;
 
+use libm::expf;
 use smart_leds::RGB8;
 
 #[derive(Default)]
@@ -13,6 +14,7 @@ pub struct Point {
     pub dx: f32,
     pub dy: f32,
     pub color: RGB8,
+    pub scale: f32,
 }
 
 impl Point {
@@ -42,16 +44,24 @@ fn pow(f: f32, i: usize) -> f32 {
     out
 }
 
-struct Grid {
+pub struct Grid {
     cols: usize,
     rows: usize,
+    n_leds: usize,
 }
 
 impl Grid {
-    #[allow(
-        clippy::modulo_one,
-        reason = "COLS is a tunable grid width that currently happens to be 1"
-    )]
+    pub fn new(cols: usize, rows: usize) -> Grid {
+        Grid {
+            cols,
+            rows,
+            n_leds: cols * rows,
+        }
+    }
+    pub fn render(&self) -> &[RGB8] {
+        (0..grid.n_leds).map(|ix| grid.render_points_for_led(ix, &points))
+    }
+
     fn ix_to_grid(&self, ix: usize) -> (usize, usize) {
         let y = ix / self.cols;
         let x = if y.is_multiple_of(2) {
@@ -72,7 +82,7 @@ impl Grid {
         let y = y_u as f32 / self.rows as f32;
         let x = x_u as f32 / self.cols as f32;
         for point in points {
-            let multiplier = smear(point.x, x, point.y, y);
+            let multiplier = smear(point.x, x, point.y, y, point.scale);
             color.g = u8::saturating_add(color.g, (point.color.g as f32 * multiplier) as u8);
             color.r = u8::saturating_add(color.r, (point.color.r as f32 * multiplier) as u8);
             color.b = u8::saturating_add(color.b, (point.color.b as f32 * multiplier) as u8);
@@ -81,16 +91,18 @@ impl Grid {
     }
 }
 
-fn smear(x1: f32, x2: f32, y1: f32, y2: f32) -> f32 {
-    const SCALE: f32 = 100.;
+fn smear(x1: f32, x2: f32, y1: f32, y2: f32, scale: f32) -> f32 {
     let dist = |d: f32| d.min(1. - d);
     let dx = dist((x1 - x2).abs());
     let dy = dist((y1 - y2).abs());
 
-    let distance = pow(dx * SCALE, 2) + pow(dy * SCALE, 2);
-    let beta = 0.5 + distance;
-    let beta_clipped = if beta < 1.0 { beta } else { 1.0 };
-    pow(beta_clipped, 2) * pow(1.0 - beta_clipped, 2) / 0.0625
+    let distance = pow(dx, 2) + pow(dy, 2);
+
+    expf(-distance / scale)
+
+    // let beta = 0.5 + distance;
+    // let beta_clipped = if beta < 1.0 { beta } else { 1.0 };
+    // powi(beta_clipped, 4) * powi(1.0 - beta_clipped, 4) / 0.0625
 }
 #[cfg(test)]
 mod tests {
@@ -106,7 +118,7 @@ mod tests {
     #[test]
     fn smear_ramps() {
         assert_abs_diff_eq!(smear(0.0, 0.0, 0.0, 0.0), 1.0);
-        let mid = smear(0.0, 0.005, 0.0, 0.0);
+        let mid = smear(0.0, 0.005, 0.0, 0.0, 100.0);
         assert!(0.0 < mid);
         assert!(mid < 1.0);
         assert_abs_diff_eq!(smear(0.0, 0.01, 0.0, 0.0), 0.0);
@@ -119,6 +131,7 @@ mod tests {
             dx: 0.2,
             dy: -0.1,
             color: [0, 0, 0].into(),
+            scale: 100.0,
         }
         .mv();
         assert_abs_diff_eq!(point.x, 0.1);
@@ -127,7 +140,7 @@ mod tests {
 
     #[test]
     fn snake_grid_reverses_odd_rows() {
-        let grid = Grid { cols: 3, rows: 3 };
+        let grid = Grid::new(3, 3);
         // self.cols == 1 so x is always 0; the interesting axis is y == row.
         assert_eq!(grid.ix_to_grid(0), (0, 0));
         assert_eq!(grid.ix_to_grid(1), (1, 0));
@@ -142,7 +155,7 @@ mod tests {
 
     #[test]
     fn brightness_peaks_at_the_point_and_fades_with_distance() {
-        let grid = Grid { cols: 3, rows: 3 };
+        let grid = Grid::new(3, 3);
         let points = [Point {
             x: 0.0,
             y: 0.0,

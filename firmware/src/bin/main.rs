@@ -7,6 +7,8 @@
 )]
 #![deny(clippy::large_stack_frames)]
 
+use core::panic;
+
 use esp_backtrace as _;
 use esp_hal::clock::CpuClock;
 use esp_hal::main;
@@ -14,7 +16,7 @@ use log::info;
 
 use esp_hal::{delay::Delay, rmt::Rmt, time::Rate};
 use esp_hal_smartled::{SmartLedsAdapter, smart_led_buffer};
-use patterns::{COLS, N_LEDS, Point, ROWS, render_points_for_led};
+use patterns::{Grid, Point};
 use smart_leds::{RGB8, SmartLedsWrite};
 
 // This creates a default app-descriptor required by the esp-idf bootloader.
@@ -34,8 +36,9 @@ fn main() -> ! {
 
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
+    let grid = Grid::new(15, 10);
 
-    let mut buf = smart_led_buffer!(N_LEDS);
+    let mut buf = smart_led_buffer!(150);
     let mut led = {
         let frequency = Rate::from_mhz(80);
         let rmt = Rmt::new(peripherals.RMT, frequency).expect("Failed to initialize RMT0");
@@ -44,32 +47,37 @@ fn main() -> ! {
 
     let delay = Delay::new();
     let mut points = [
+        // Point {
+        //     x: 0.,
+        //     y: 0.,
+        //     dx: 0.0,
+        //     dy: 0.0001,
+        //     scale: 0.1,
+        //     color: RGB8 {
+        //         r: 255,
+        //         g: 30,
+        //         b: 100,
+        //     },
+        // },
         Point {
             x: 0.,
             y: 0.,
-            dx: 0.0,
-            dy: 0.01,
-            color: RGB8 {
-                r: 255,
-                g: 30,
-                b: 100,
-            },
-        },
-        Point {
-            x: 0.,
-            y: 0.,
-            dx: 0.0,
-            dy: -0.02,
-            color: RGB8 {
-                r: 50,
-                g: 255,
-                b: 50,
-            },
+            dx: 0.001,
+            dy: 0.001,
+            scale: 0.01,
+            color: RGB8 { r: 1, g: 5, b: 1 },
         },
     ];
     let mut i = 0;
     loop {
-        led.write((0..(ROWS * COLS)).map(|ix| render_points_for_led(ix, &points)))
+        if (0..grid.n_leds)
+            .map(|ix| grid.render_points_for_led(ix, &points))
+            .fold(0u32, |a, p| a + p.r as u32 + p.g as u32 + p.b as u32)
+            > 75 * 255 * 3
+        {
+            panic!("Too much brightness")
+        }
+        led.write((0..grid.n_leds).map(|ix| grid.render_points_for_led(ix, &points)))
             .expect("Write failed");
         points = points.map(|p| p.mv());
         delay.delay_millis(20);
