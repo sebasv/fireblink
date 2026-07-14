@@ -116,3 +116,32 @@ let mut grid = Grid::builder(&mut points)
 - **Ice** — white → cyan → blue → black.
 - **Toxic** — white → green → dark green → black.
 - **Rainbow-by-age** — hue rotates with heat instead of a fixed ramp.
+- **Spatial-rainbow** — hue fixed by grid position, heat drives brightness.
+
+## Scenes (curated presets)
+
+`Scene` bundles rule + palette + effects into one selectable look; the seed
+stays a separate axis (`grid.set_scene(s)` never changes the pattern):
+Fire, IcePlasma, Rainbow, Wildfire, Interference, Reactive, AudioFire, Toxic.
+
+## Controls (3 buttons + grid HUD)
+
+`patterns::controls` is a pure state machine; the firmware feeds it debounced
+button state and it drives the grid.
+
+| Button | Short | Long |
+|--------|-------|------|
+| Scene  | next scene | previous scene |
+| Seed   | next pattern | previous pattern |
+| Action | shuffle scene + seed | restart current pattern |
+
+On any press a HUD overlays for ~0.8 s — scene dots on the top row, seed dots on
+the bottom row, active one bright — then fades back to the live view.
+
+## Audio (electret mic → ADC)
+
+`Envelope` turns raw ADC samples into `Audio { level, beat }` with auto-gain and
+onset detection (see `MIC-IDEAS.md`). Wired reactions:
+
+- `audio_decay` — louder music lengthens the comet trails.
+- `audio_beat` — detected beats flare the whole board.

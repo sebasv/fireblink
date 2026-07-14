@@ -4,14 +4,20 @@
 #[macro_use]
 extern crate approx;
 
+mod audio;
+mod controls;
 mod life;
 mod palette;
 mod point;
+mod scene;
 mod seeds;
 
+pub use audio::{Audio, Envelope};
+pub use controls::{Button, ButtonState, Controls, Press};
 pub use life::Rule;
 pub use palette::Palette;
 pub use point::Point;
+pub use scene::Scene;
 pub use seeds::Seed;
 
 use smart_leds::RGB8;
@@ -24,6 +30,16 @@ pub const N_LEDS: usize = ROWS * COLS;
 const RNG_SEED: u32 = 0x9E37_79B9;
 /// Second channel is seeded half a board away from the first. (viz idea #5)
 const CHANNEL_B_SHIFT: (usize, usize) = (COLS / 2, ROWS / 2);
+/// Heat added to every cell on a detected beat.
+const BEAT_FLARE: u8 = 120;
+
+/// Transient selection indicator overlaid on the live view while a control is
+/// in use: scenes along the top row, seeds along the bottom row, active bright.
+#[derive(Clone, Copy)]
+pub struct Hud {
+    pub scene_ix: u8,
+    pub seed_ix: u8,
+}
 
 /// Everything a control surface can flip at runtime.
 #[derive(Clone, Copy)]
@@ -37,6 +53,10 @@ pub struct Config {
     pub reactive: bool,
     /// Run a second Life board on the blue channel. (viz idea #5)
     pub two_channel: bool,
+    /// Loud audio lengthens the afterglow (louder = longer comet tails).
+    pub audio_decay: bool,
+    /// Detected beats flare the whole board.
+    pub audio_beat: bool,
 }
 
 impl Default for Config {
@@ -48,6 +68,8 @@ impl Default for Config {
             tint_by_field: false,
             reactive: false,
             two_channel: false,
+            audio_decay: false,
+            audio_beat: false,
         }
     }
 }
@@ -61,6 +83,7 @@ pub struct Grid<'a> {
     state_b: [bool; N_LEDS],
     heat_b: [u8; N_LEDS],
     activity: u8,
+    hud: Option<Hud>,
 }
 
 pub struct GridBuilder<'a> {
@@ -93,6 +116,14 @@ impl<'a> GridBuilder<'a> {
         self.config.two_channel = on;
         self
     }
+    pub fn audio_decay(mut self, on: bool) -> Self {
+        self.config.audio_decay = on;
+        self
+    }
+    pub fn audio_beat(mut self, on: bool) -> Self {
+        self.config.audio_beat = on;
+        self
+    }
     pub fn config(mut self, config: Config) -> Self {
         self.config = config;
         self
@@ -113,6 +144,7 @@ impl<'a> GridBuilder<'a> {
             state_b,
             heat_b,
             activity: 0,
+            hud: None,
         }
     }
 }
@@ -134,19 +166,33 @@ impl<'a> Grid<'a> {
             .fold(0u32, |a, p| a + p.r as u32 + p.g as u32 + p.b as u32)
     }
 
-    pub fn update(&mut self) {
+    /// Advance one frame. Pass `Audio::default()` when running silent.
+    pub fn update(&mut self, audio: Audio) {
         self.points.iter_mut().for_each(Point::mv);
+
+        let decay = if self.config.audio_decay {
+            life::BASE_DECAY + audio.level as u16 * (life::MAX_DECAY - life::BASE_DECAY) / 255
+        } else {
+            life::BASE_DECAY
+        };
+        let flare = self.config.audio_beat && audio.beat;
 
         let current = self.state_a;
         let next = life::step(self.config.rule, &current, &mut self.rng);
         self.activity = life::churn(&current, &next);
-        life::decay_heat(&mut self.heat_a, &next);
+        life::decay_heat(&mut self.heat_a, &next, decay);
+        if flare {
+            life::flare(&mut self.heat_a, BEAT_FLARE);
+        }
         self.state_a = next;
 
         if self.config.two_channel {
             let current = self.state_b;
             let next = life::step(self.config.rule, &current, &mut self.rng);
-            life::decay_heat(&mut self.heat_b, &next);
+            life::decay_heat(&mut self.heat_b, &next, decay);
+            if flare {
+                life::flare(&mut self.heat_b, BEAT_FLARE);
+            }
             self.state_b = next;
         }
     }
@@ -160,13 +206,25 @@ impl<'a> Grid<'a> {
         life::seed_heat(&mut self.heat_b, &self.state_b);
     }
 
-    /// Swap visual config — for palette/rule/mode controls. Does not reseed.
+    /// Apply a scene's visuals, keeping the current seed. (mode control)
+    pub fn set_scene(&mut self, scene: Scene) {
+        let seed = self.config.seed;
+        self.config = scene.config();
+        self.config.seed = seed;
+    }
+
+    /// Swap the full visual config — for direct/preset control. Does not reseed.
     pub fn set_config(&mut self, config: Config) {
         self.config = config;
     }
 
     pub fn config(&self) -> Config {
         self.config
+    }
+
+    /// Show or clear the selection HUD overlay. The UI clears it after a timeout.
+    pub fn set_hud(&mut self, hud: Option<Hud>) {
+        self.hud = hud;
     }
 
     /// map a snake to a grid:
@@ -185,8 +243,12 @@ impl<'a> Grid<'a> {
 
     fn render_led(&self, ix: usize) -> RGB8 {
         let (x_u, y_u) = self.ix_to_grid(ix);
-        let idx = y_u * COLS + x_u;
 
+        if let Some(marker) = self.hud_marker(x_u, y_u) {
+            return marker;
+        }
+
+        let idx = y_u * COLS + x_u;
         let ambient = point::field(&*self.points, x_u, y_u);
         let mut color = ambient;
 
@@ -207,6 +269,32 @@ impl<'a> Grid<'a> {
                 .saturating_add((self.heat_b[idx] as u16 * 90 / 255) as u8);
         }
         color
+    }
+
+    /// HUD overlay: scene dots on the top row, seed dots on the bottom row.
+    fn hud_marker(&self, x_u: usize, y_u: usize) -> Option<RGB8> {
+        const ACTIVE: RGB8 = RGB8 {
+            r: 70,
+            g: 70,
+            b: 70,
+        };
+        const IDLE: RGB8 = RGB8 { r: 6, g: 6, b: 6 };
+        let hud = self.hud?;
+        if y_u == 0 && x_u < Scene::ALL.len() {
+            return Some(if x_u == hud.scene_ix as usize {
+                ACTIVE
+            } else {
+                IDLE
+            });
+        }
+        if y_u == ROWS - 1 && x_u < Seed::ALL.len() {
+            return Some(if x_u == hud.seed_ix as usize {
+                ACTIVE
+            } else {
+                IDLE
+            });
+        }
+        None
     }
 
     /// Calm dims the palette to ~40%, churn drives it to full. (viz idea #2)
@@ -243,8 +331,9 @@ mod tests {
             ..Point::default()
         }];
         let grid = Grid::builder(&mut points).seed(Seed::Empty).build();
+        // row 5 is well away from the point at (0,0); avoid the HUD rows 0 & 9.
         let near = grid.render_led(0).r;
-        let far = grid.render_led(N_LEDS / 2).r;
+        let far = grid.render_led(5 * COLS + 7).r;
         assert!(
             near > far,
             "point LED ({near}) should outshine a far LED ({far})"
@@ -263,7 +352,7 @@ mod tests {
             grid.brightness() > 0,
             "a seeded board should light some LEDs"
         );
-        grid.update();
+        grid.update(Audio::default());
         assert!(
             grid.brightness() > 0,
             "the afterglow should persist across a frame"
@@ -279,5 +368,55 @@ mod tests {
         assert_eq!(grid.brightness(), 0, "reseeding to Empty clears the board");
         grid.reseed(Seed::Acorn);
         assert!(grid.brightness() > 0 && grid.brightness() != lit);
+    }
+
+    #[test]
+    fn set_scene_keeps_the_current_seed() {
+        let mut points = [];
+        let mut grid = Grid::builder(&mut points).seed(Seed::Acorn).build();
+        grid.set_scene(Scene::Wildfire);
+        assert_eq!(grid.config().rule, Rule::Wildfire);
+        assert_eq!(
+            grid.config().seed,
+            Seed::Acorn,
+            "scene must not change the seed"
+        );
+    }
+
+    #[test]
+    fn beat_flare_brightens_only_when_enabled() {
+        let mut points = [];
+        let mut grid = Grid::builder(&mut points)
+            .seed(Seed::Acorn)
+            .audio_beat(true)
+            .build();
+        let calm = Audio {
+            level: 0,
+            beat: false,
+        };
+        let beat = Audio {
+            level: 255,
+            beat: true,
+        };
+        grid.update(calm);
+        let before = grid.brightness();
+        grid.update(beat);
+        assert!(
+            grid.brightness() > before,
+            "a beat should flare the board brighter ({before} -> {})",
+            grid.brightness()
+        );
+    }
+
+    #[test]
+    fn hud_overlay_marks_the_selection_rows() {
+        let mut points = [];
+        let mut grid = Grid::builder(&mut points).seed(Seed::Empty).build();
+        assert_eq!(grid.render_led(0), RGB8::default(), "no HUD, dark board");
+        grid.set_hud(Some(Hud {
+            scene_ix: 0,
+            seed_ix: 0,
+        }));
+        assert!(grid.render_led(0).r > 0, "HUD lights the top-left marker");
     }
 }

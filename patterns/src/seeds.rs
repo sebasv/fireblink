@@ -3,7 +3,7 @@
 use crate::{COLS, N_LEDS, ROWS};
 
 /// A named starting pattern. Cell coordinates are `(x, y)` on the 15×10 board.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Seed {
     Empty,
     Glider,
@@ -16,6 +16,30 @@ pub enum Seed {
 }
 
 impl Seed {
+    /// Cyclable patterns for the seed control — `Empty` is deliberately excluded
+    /// so the button never lands on a blank board.
+    pub const ALL: [Seed; 7] = [
+        Seed::Glider,
+        Seed::Lwss,
+        Seed::RPentomino,
+        Seed::Acorn,
+        Seed::Pentadecathlon,
+        Seed::Beacon,
+        Seed::Toad,
+    ];
+
+    pub fn index(self) -> usize {
+        Self::ALL.iter().position(|&s| s == self).unwrap_or(0)
+    }
+
+    pub fn next(self) -> Seed {
+        Self::ALL[(self.index() + 1) % Self::ALL.len()]
+    }
+
+    pub fn prev(self) -> Seed {
+        Self::ALL[(self.index() + Self::ALL.len() - 1) % Self::ALL.len()]
+    }
+
     const fn cells(self) -> &'static [(usize, usize)] {
         match self {
             Seed::Empty => &[],

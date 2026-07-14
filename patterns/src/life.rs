@@ -3,7 +3,7 @@
 use crate::{COLS, N_LEDS, ROWS};
 
 /// How the board evolves each frame.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Rule {
     /// Conway's Game of Life, B3/S23.
     Conway,
@@ -14,7 +14,9 @@ pub enum Rule {
 
 /// How fast a dead cell's afterglow cools, as a fraction of 256 per frame.
 // ponytail: ~0.8/frame → trails last ~15 frames; drop it for longer comet tails.
-const HEAT_DECAY: u16 = 205;
+pub(crate) const BASE_DECAY: u16 = 205;
+/// Slowest cooling, reached at full audio level (louder music = longer tails).
+pub(crate) const MAX_DECAY: u16 = 250;
 
 /// Chance (out of `LIGHTNING`) that an idle cell spontaneously ignites in
 /// wildfire mode. Higher denominator = rarer sparks.
@@ -35,14 +37,21 @@ pub(crate) fn seed_heat(heat: &mut [u8; N_LEDS], state: &[bool; N_LEDS]) {
     }
 }
 
-/// Live cells map to full heat; dead cells cool toward zero.
-pub(crate) fn decay_heat(heat: &mut [u8; N_LEDS], next: &[bool; N_LEDS]) {
+/// Live cells map to full heat; dead cells cool by `decay / 256` per frame.
+pub(crate) fn decay_heat(heat: &mut [u8; N_LEDS], next: &[bool; N_LEDS], decay: u16) {
     for (h, &alive) in heat.iter_mut().zip(next.iter()) {
         *h = if alive {
             u8::MAX
         } else {
-            (*h as u16 * HEAT_DECAY / 256) as u8
+            (*h as u16 * decay / 256) as u8
         };
+    }
+}
+
+/// Flare every cell's heat up — a beat pulse across the whole board.
+pub(crate) fn flare(heat: &mut [u8; N_LEDS], amount: u8) {
+    for h in heat.iter_mut() {
+        *h = h.saturating_add(amount);
     }
 }
 
@@ -178,7 +187,7 @@ mod tests {
     fn decay_heat_leaves_a_fading_ember() {
         let mut heat = [0u8; N_LEDS];
         heat[5] = u8::MAX;
-        decay_heat(&mut heat, &[false; N_LEDS]); // cell 5 is now dead
+        decay_heat(&mut heat, &[false; N_LEDS], BASE_DECAY); // cell 5 is now dead
         assert!(0 < heat[5] && heat[5] < u8::MAX, "dead cell should linger");
     }
 
