@@ -84,6 +84,7 @@ pub struct Grid<'a> {
     heat_b: [u8; N_LEDS],
     activity: u8,
     hud: Option<Hud>,
+    audio: Audio,
 }
 
 pub struct GridBuilder<'a> {
@@ -145,6 +146,7 @@ impl<'a> GridBuilder<'a> {
             heat_b,
             activity: 0,
             hud: None,
+            audio: Audio::default(),
         }
     }
 }
@@ -168,6 +170,7 @@ impl<'a> Grid<'a> {
 
     /// Advance one frame. Pass `Audio::default()` when running silent.
     pub fn update(&mut self, audio: Audio) {
+        self.audio = audio;
         self.points.iter_mut().for_each(Point::mv);
 
         let decay = if self.config.audio_decay {
@@ -249,7 +252,7 @@ impl<'a> Grid<'a> {
         }
 
         let idx = y_u * COLS + x_u;
-        let ambient = point::field(&*self.points, x_u, y_u);
+        let ambient = point::field(&*self.points, x_u, y_u, self.audio.level);
         let mut color = ambient;
 
         let mut ember = palette::color(self.config.palette, self.heat_a[idx], x_u, y_u);

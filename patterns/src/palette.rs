@@ -74,7 +74,7 @@ pub(crate) fn scale(c: RGB8, factor: u8) -> RGB8 {
 }
 
 /// Full-brightness colour wheel, `h` running once around the hues.
-fn wheel(h: u8) -> RGB8 {
+pub(crate) fn wheel(h: u8) -> RGB8 {
     let f = (h % 43) * 6;
     match h / 43 {
         0 => RGB8 { r: 255, g: f, b: 0 },

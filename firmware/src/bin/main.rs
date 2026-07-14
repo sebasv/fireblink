@@ -45,14 +45,30 @@ fn main() -> ! {
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
 
-    let mut points = [Point {
-        x: 0.,
-        y: 0.,
-        dx: 0.001,
-        dy: 0.001,
-        scale: 0.01,
-        color: RGB8 { r: 1, g: 5, b: 1 },
-    }];
+    let mut points = [
+        // orbiting blob that slowly cycles hue and blooms with the music
+        Point {
+            x: 0.3,
+            y: 0.5,
+            dx: 0.004,
+            dy: 0.0,
+            turn: 0.03,
+            scale: 0.02,
+            hue_rate: 1,
+            pulse: 2.0,
+            ..Point::default()
+        },
+        // steady dim ember drifting the other way
+        Point {
+            x: 0.7,
+            y: 0.5,
+            dx: -0.002,
+            dy: 0.001,
+            scale: 0.01,
+            color: RGB8 { r: 1, g: 5, b: 1 },
+            ..Point::default()
+        },
+    ];
 
     let scene = Scene::AudioFire;
     let seed = Seed::RPentomino;

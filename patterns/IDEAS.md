@@ -145,3 +145,15 @@ onset detection (see `MIC-IDEAS.md`). Wired reactions:
 
 - `audio_decay` — louder music lengthens the comet trails.
 - `audio_beat` — detected beats flare the whole board.
+
+## Points (the drifting light field)
+
+Soft coloured blobs layered under the board. Per-`Point` knobs, all default off:
+
+- `turn` — radians the velocity rotates each frame; `0` = straight drift, small
+  values trace orbits and arcs.
+- `hue` / `hue_rate` — non-zero `hue_rate` cycles the colour round the wheel;
+  `0` keeps the static `color`.
+- `pulse` — loudness inflates the blob: effective scale is
+  `scale * (1 + pulse * level)`, so blobs bloom on loud passages. Uses the same
+  `Audio` as the board.
