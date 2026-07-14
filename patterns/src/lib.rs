@@ -202,7 +202,9 @@ impl<'a> Grid<'a> {
         color.b = color.b.saturating_add(ember.b);
 
         if self.config.two_channel {
-            color.b = color.b.saturating_add((self.heat_b[idx] as u16 * 90 / 255) as u8);
+            color.b = color
+                .b
+                .saturating_add((self.heat_b[idx] as u16 * 90 / 255) as u8);
         }
         color
     }
@@ -243,17 +245,29 @@ mod tests {
         let grid = Grid::builder(&mut points).seed(Seed::Empty).build();
         let near = grid.render_led(0).r;
         let far = grid.render_led(N_LEDS / 2).r;
-        assert!(near > far, "point LED ({near}) should outshine a far LED ({far})");
-        assert_eq!(far, 0, "a point half the grid away should not light this LED");
+        assert!(
+            near > far,
+            "point LED ({near}) should outshine a far LED ({far})"
+        );
+        assert_eq!(
+            far, 0,
+            "a point half the grid away should not light this LED"
+        );
     }
 
     #[test]
     fn seeded_board_lights_up_and_keeps_burning_after_update() {
         let mut points = [];
         let mut grid = Grid::builder(&mut points).seed(Seed::Glider).build();
-        assert!(grid.brightness() > 0, "a seeded board should light some LEDs");
+        assert!(
+            grid.brightness() > 0,
+            "a seeded board should light some LEDs"
+        );
         grid.update();
-        assert!(grid.brightness() > 0, "the afterglow should persist across a frame");
+        assert!(
+            grid.brightness() > 0,
+            "the afterglow should persist across a frame"
+        );
     }
 
     #[test]

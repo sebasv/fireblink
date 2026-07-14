@@ -100,7 +100,10 @@ fn wildfire_update(state: &[bool; N_LEDS], rng: &mut u32) -> [bool; N_LEDS] {
             let r = (COLS + j + 1) % COLS;
             let u = (ROWS + i - 1) % ROWS;
             let d = (ROWS + i + 1) % ROWS;
-            let burning = state[u * COLS + j] || state[d * COLS + j] || state[i * COLS + l] || state[i * COLS + r];
+            let burning = state[u * COLS + j]
+                || state[d * COLS + j]
+                || state[i * COLS + l]
+                || state[i * COLS + r];
             buf[idx] = burning || xorshift(rng).is_multiple_of(LIGHTNING);
         }
     }
@@ -186,6 +189,8 @@ mod tests {
         let next = wildfire_update(&spark, &mut rng);
         assert!(!next[5 * COLS + 7], "the burning cell should burn out");
         // its four orthogonal neighbours should catch
-        assert!(next[5 * COLS + 6] && next[5 * COLS + 8] && next[4 * COLS + 7] && next[6 * COLS + 7]);
+        assert!(
+            next[5 * COLS + 6] && next[5 * COLS + 8] && next[4 * COLS + 7] && next[6 * COLS + 7]
+        );
     }
 }

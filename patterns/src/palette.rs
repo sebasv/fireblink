@@ -50,7 +50,11 @@ pub(crate) fn color(p: Palette, heat: u8, x: usize, y: usize) -> RGB8 {
 /// (grey) when there is no field nearby. (viz idea #1)
 pub(crate) fn tint(ember: RGB8, ambient: RGB8) -> RGB8 {
     let e = ember.r as u16 + ember.g as u16 + ember.b as u16;
-    let (ar, ag, ab) = (ambient.r as u16 + 1, ambient.g as u16 + 1, ambient.b as u16 + 1);
+    let (ar, ag, ab) = (
+        ambient.r as u16 + 1,
+        ambient.g as u16 + 1,
+        ambient.b as u16 + 1,
+    );
     let a = ar + ag + ab;
     RGB8 {
         r: (e * ar / a).min(255) as u8,
@@ -74,11 +78,23 @@ fn wheel(h: u8) -> RGB8 {
     let f = (h % 43) * 6;
     match h / 43 {
         0 => RGB8 { r: 255, g: f, b: 0 },
-        1 => RGB8 { r: 255 - f, g: 255, b: 0 },
+        1 => RGB8 {
+            r: 255 - f,
+            g: 255,
+            b: 0,
+        },
         2 => RGB8 { r: 0, g: 255, b: f },
-        3 => RGB8 { r: 0, g: 255 - f, b: 255 },
+        3 => RGB8 {
+            r: 0,
+            g: 255 - f,
+            b: 255,
+        },
         4 => RGB8 { r: f, g: 0, b: 255 },
-        _ => RGB8 { r: 255, g: 0, b: 255 - f },
+        _ => RGB8 {
+            r: 255,
+            g: 0,
+            b: 255 - f,
+        },
     }
 }
 
@@ -108,7 +124,10 @@ mod tests {
             for heat in 0..=255u16 {
                 let c = color(p, heat as u8, 3, 7);
                 for ch in [c.r, c.g, c.b] {
-                    assert!(ch as u16 <= MAX, "channel {ch} over ceiling for heat {heat}");
+                    assert!(
+                        ch as u16 <= MAX,
+                        "channel {ch} over ceiling for heat {heat}"
+                    );
                 }
             }
         }
