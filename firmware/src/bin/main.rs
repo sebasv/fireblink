@@ -16,7 +16,7 @@ use log::info;
 
 use esp_hal::{delay::Delay, rmt::Rmt, time::Rate};
 use esp_hal_smartled::{SmartLedsAdapter, smart_led_buffer};
-use patterns::{Grid, Point};
+use patterns::{COLS, Grid, N_LEDS, Point};
 use smart_leds::{RGB8, SmartLedsWrite};
 
 // This creates a default app-descriptor required by the esp-idf bootloader.
@@ -36,16 +36,6 @@ fn main() -> ! {
 
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
-    let grid = Grid::new(15, 10);
-
-    let mut buf = smart_led_buffer!(150);
-    let mut led = {
-        let frequency = Rate::from_mhz(80);
-        let rmt = Rmt::new(peripherals.RMT, frequency).expect("Failed to initialize RMT0");
-        SmartLedsAdapter::new(rmt.channel0, peripherals.GPIO25, &mut buf)
-    };
-
-    let delay = Delay::new();
     let mut points = [
         // Point {
         //     x: 0.,
@@ -68,18 +58,32 @@ fn main() -> ! {
             color: RGB8 { r: 1, g: 5, b: 1 },
         },
     ];
+    let mut conway_state = [false; N_LEDS];
+    // glider, top-left corner (x, y):
+    // . X .
+    // . . X
+    // X X X
+    for (x, y) in [(1, 0), (2, 1), (0, 2), (1, 2), (2, 2)] {
+        conway_state[y * COLS + x] = true;
+    }
+    let mut grid = Grid::new(&mut points, conway_state);
+
+    let mut buf = smart_led_buffer!(N_LEDS);
+    let mut led = {
+        let frequency = Rate::from_mhz(80);
+        let rmt = Rmt::new(peripherals.RMT, frequency).expect("Failed to initialize RMT0");
+        SmartLedsAdapter::new(rmt.channel0, peripherals.GPIO25, &mut buf)
+    };
+
+    let delay = Delay::new();
+
     let mut i = 0;
     loop {
-        if (0..grid.n_leds)
-            .map(|ix| grid.render_points_for_led(ix, &points))
-            .fold(0u32, |a, p| a + p.r as u32 + p.g as u32 + p.b as u32)
-            > 75 * 255 * 3
-        {
+        if grid.brightness() > 75 * 255 * 3 {
             panic!("Too much brightness")
         }
-        led.write((0..grid.n_leds).map(|ix| grid.render_points_for_led(ix, &points)))
-            .expect("Write failed");
-        points = points.map(|p| p.mv());
+        led.write(grid.render()).expect("Write failed");
+        grid.update();
         delay.delay_millis(20);
         i = (i + 1) % 50;
         if i == 0 {
