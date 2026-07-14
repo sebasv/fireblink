@@ -16,7 +16,7 @@ use log::info;
 
 use esp_hal::{delay::Delay, rmt::Rmt, time::Rate};
 use esp_hal_smartled::{SmartLedsAdapter, smart_led_buffer};
-use patterns::{COLS, Grid, N_LEDS, Point};
+use patterns::{Grid, N_LEDS, Palette, Point, Seed};
 use smart_leds::{RGB8, SmartLedsWrite};
 
 // This creates a default app-descriptor required by the esp-idf bootloader.
@@ -58,15 +58,11 @@ fn main() -> ! {
             color: RGB8 { r: 1, g: 5, b: 1 },
         },
     ];
-    let mut conway_state = [false; N_LEDS];
-    // glider, top-left corner (x, y):
-    // . X .
-    // . . X
-    // X X X
-    for (x, y) in [(1, 0), (2, 1), (0, 2), (1, 2), (2, 2)] {
-        conway_state[y * COLS + x] = true;
-    }
-    let mut grid = Grid::new(&mut points, conway_state);
+    let mut grid = Grid::builder(&mut points)
+        .seed(Seed::Acorn)
+        .palette(Palette::Fire)
+        .tint_by_field(true)
+        .build();
 
     let mut buf = smart_led_buffer!(N_LEDS);
     let mut led = {

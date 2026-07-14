@@ -4,90 +4,175 @@
 #[macro_use]
 extern crate approx;
 
-use core::iter::Iterator;
+mod life;
+mod palette;
+mod point;
+mod seeds;
 
-use libm::expf;
+pub use life::Rule;
+pub use palette::Palette;
+pub use point::Point;
+pub use seeds::Seed;
+
 use smart_leds::RGB8;
 
 pub const ROWS: usize = 10;
 pub const COLS: usize = 15;
 pub const N_LEDS: usize = ROWS * COLS;
 
-/// How fast a dead cell's afterglow cools, as a fraction of 256 per frame.
-// ponytail: ~0.8/frame → trails last ~15 frames; drop it for longer comet tails.
-const HEAT_DECAY: u16 = 205;
+/// Non-zero xorshift seed for wildfire lightning.
+const RNG_SEED: u32 = 0x9E37_79B9;
+/// Second channel is seeded half a board away from the first. (viz idea #5)
+const CHANNEL_B_SHIFT: (usize, usize) = (COLS / 2, ROWS / 2);
 
-#[derive(Default)]
-pub struct Point {
-    pub x: f32,
-    pub y: f32,
-    pub dx: f32,
-    pub dy: f32,
-    pub color: RGB8,
-    pub scale: f32,
+/// Everything a control surface can flip at runtime.
+#[derive(Clone, Copy)]
+pub struct Config {
+    pub seed: Seed,
+    pub palette: Palette,
+    pub rule: Rule,
+    /// Flames pick up the drifting point field's hue. (viz idea #1)
+    pub tint_by_field: bool,
+    /// Palette brightness tracks how much the board is churning. (viz idea #2)
+    pub reactive: bool,
+    /// Run a second Life board on the blue channel. (viz idea #5)
+    pub two_channel: bool,
 }
 
-impl Point {
-    pub fn mv(&mut self) {
-        self.x = wrap01(self.x + self.dx);
-        self.y = wrap01(self.y + self.dy);
+impl Default for Config {
+    fn default() -> Self {
+        Config {
+            seed: Seed::Glider,
+            palette: Palette::Fire,
+            rule: Rule::Conway,
+            tint_by_field: false,
+            reactive: false,
+            two_channel: false,
+        }
     }
-}
-
-/// Wrap into `[0, 1)`. `f32::rem_euclid` is std-only, so `%` (which keeps the
-/// dividend's sign) is folded back by hand for negative deltas.
-#[inline(always)]
-fn wrap01(v: f32) -> f32 {
-    let r = v % 1.;
-    if r < 0. { r + 1. } else { r }
-}
-
-#[inline(always)]
-fn pow(f: f32, i: usize) -> f32 {
-    let mut out = 1.0;
-    for _ in 0..i {
-        out *= f;
-    }
-    out
 }
 
 pub struct Grid<'a> {
     points: &'a mut [Point],
-    conway_state: [bool; N_LEDS],
-    conway_heat: [u8; N_LEDS],
+    config: Config,
+    rng: u32,
+    state_a: [bool; N_LEDS],
+    heat_a: [u8; N_LEDS],
+    state_b: [bool; N_LEDS],
+    heat_b: [u8; N_LEDS],
+    activity: u8,
+}
+
+pub struct GridBuilder<'a> {
+    points: &'a mut [Point],
+    config: Config,
+}
+
+impl<'a> GridBuilder<'a> {
+    pub fn seed(mut self, seed: Seed) -> Self {
+        self.config.seed = seed;
+        self
+    }
+    pub fn palette(mut self, palette: Palette) -> Self {
+        self.config.palette = palette;
+        self
+    }
+    pub fn rule(mut self, rule: Rule) -> Self {
+        self.config.rule = rule;
+        self
+    }
+    pub fn tint_by_field(mut self, on: bool) -> Self {
+        self.config.tint_by_field = on;
+        self
+    }
+    pub fn reactive(mut self, on: bool) -> Self {
+        self.config.reactive = on;
+        self
+    }
+    pub fn two_channel(mut self, on: bool) -> Self {
+        self.config.two_channel = on;
+        self
+    }
+    pub fn config(mut self, config: Config) -> Self {
+        self.config = config;
+        self
+    }
+    pub fn build(self) -> Grid<'a> {
+        let state_a = seeds::board(self.config.seed, 0, 0);
+        let state_b = seeds::board(self.config.seed, CHANNEL_B_SHIFT.0, CHANNEL_B_SHIFT.1);
+        let mut heat_a = [0u8; N_LEDS];
+        let mut heat_b = [0u8; N_LEDS];
+        life::seed_heat(&mut heat_a, &state_a);
+        life::seed_heat(&mut heat_b, &state_b);
+        Grid {
+            points: self.points,
+            config: self.config,
+            rng: RNG_SEED,
+            state_a,
+            heat_a,
+            state_b,
+            heat_b,
+            activity: 0,
+        }
+    }
 }
 
 impl<'a> Grid<'a> {
-    pub fn new(points: &'a mut [Point], conway_state: [bool; N_LEDS]) -> Grid<'a> {
-        let mut conway_heat = [0u8; N_LEDS];
-        for (heat, &alive) in conway_heat.iter_mut().zip(conway_state.iter()) {
-            *heat = if alive { u8::MAX } else { 0 };
-        }
-        Grid {
+    pub fn builder(points: &'a mut [Point]) -> GridBuilder<'a> {
+        GridBuilder {
             points,
-            conway_state,
-            conway_heat,
+            config: Config::default(),
         }
     }
+
     pub fn render(&self) -> impl Iterator<Item = RGB8> + '_ {
-        (0..N_LEDS).map(|ix| self.render_points_for_led(ix))
+        (0..N_LEDS).map(|ix| self.render_led(ix))
     }
+
     pub fn brightness(&self) -> u32 {
         self.render()
             .fold(0u32, |a, p| a + p.r as u32 + p.g as u32 + p.b as u32)
     }
+
     pub fn update(&mut self) {
-        self.points.iter_mut().for_each(|p| p.mv());
-        self.conway_state = conway_update(&self.conway_state);
-        for (heat, &alive) in self.conway_heat.iter_mut().zip(self.conway_state.iter()) {
-            *heat = if alive {
-                u8::MAX
-            } else {
-                (*heat as u16 * HEAT_DECAY / 256) as u8
-            };
+        self.points.iter_mut().for_each(Point::mv);
+
+        let current = self.state_a;
+        let next = life::step(self.config.rule, &current, &mut self.rng);
+        self.activity = life::churn(&current, &next);
+        life::decay_heat(&mut self.heat_a, &next);
+        self.state_a = next;
+
+        if self.config.two_channel {
+            let current = self.state_b;
+            let next = life::step(self.config.rule, &current, &mut self.rng);
+            life::decay_heat(&mut self.heat_b, &next);
+            self.state_b = next;
         }
     }
 
+    /// Reseed both boards — for a "next pattern" control.
+    pub fn reseed(&mut self, seed: Seed) {
+        self.config.seed = seed;
+        self.state_a = seeds::board(seed, 0, 0);
+        self.state_b = seeds::board(seed, CHANNEL_B_SHIFT.0, CHANNEL_B_SHIFT.1);
+        life::seed_heat(&mut self.heat_a, &self.state_a);
+        life::seed_heat(&mut self.heat_b, &self.state_b);
+    }
+
+    /// Swap visual config — for palette/rule/mode controls. Does not reseed.
+    pub fn set_config(&mut self, config: Config) {
+        self.config = config;
+    }
+
+    pub fn config(&self) -> Config {
+        self.config
+    }
+
+    /// map a snake to a grid:
+    /// 1 2 3
+    /// 6 5 4
+    /// 7 8 9
     fn ix_to_grid(&self, ix: usize) -> (usize, usize) {
         let y = ix / COLS;
         let x = if y.is_multiple_of(2) {
@@ -98,118 +183,44 @@ impl<'a> Grid<'a> {
         (x, y)
     }
 
-    /// map a snake to a grid:
-    /// 1 2 3
-    /// 6 5 4
-    /// 7 8 9
-    pub fn render_points_for_led(&self, ix: usize) -> RGB8 {
-        let mut color: RGB8 = [0, 0, 0].into();
+    fn render_led(&self, ix: usize) -> RGB8 {
         let (x_u, y_u) = self.ix_to_grid(ix);
-        let y = y_u as f32 / ROWS as f32;
-        let x = x_u as f32 / COLS as f32;
-        for point in &*self.points {
-            let multiplier = smear(point.x, x, point.y, y, point.scale);
-            color.g = u8::saturating_add(color.g, (point.color.g as f32 * multiplier) as u8);
-            color.r = u8::saturating_add(color.r, (point.color.r as f32 * multiplier) as u8);
-            color.b = u8::saturating_add(color.b, (point.color.b as f32 * multiplier) as u8);
+        let idx = y_u * COLS + x_u;
+
+        let ambient = point::field(&*self.points, x_u, y_u);
+        let mut color = ambient;
+
+        let mut ember = palette::color(self.config.palette, self.heat_a[idx], x_u, y_u);
+        if self.config.tint_by_field {
+            ember = palette::tint(ember, ambient);
         }
-        let ember = ember(self.conway_heat[y_u * COLS + x_u]);
-        color.r = u8::saturating_add(color.r, ember.r);
-        color.g = u8::saturating_add(color.g, ember.g);
-        color.b = u8::saturating_add(color.b, ember.b);
+        if self.config.reactive {
+            ember = palette::scale(ember, self.intensity());
+        }
+        color.r = color.r.saturating_add(ember.r);
+        color.g = color.g.saturating_add(ember.g);
+        color.b = color.b.saturating_add(ember.b);
+
+        if self.config.two_channel {
+            color.b = color.b.saturating_add((self.heat_b[idx] as u16 * 90 / 255) as u8);
+        }
         color
     }
-}
 
-fn conway_update(state: &[bool; N_LEDS]) -> [bool; N_LEDS] {
-    let mut buf = [false; N_LEDS];
-    for i in 0..ROWS {
-        for j in 0..COLS {
-            let l = (COLS + j - 1) % COLS;
-            let r = (COLS + j + 1) % COLS;
-            let u = (ROWS + i - 1) % ROWS;
-            let d = (ROWS + i + 1) % ROWS;
-            let n_neighbors = state[u * COLS + l] as u8
-                + state[u * COLS + j] as u8
-                + state[u * COLS + r] as u8
-                + state[i * COLS + l] as u8
-                + state[i * COLS + r] as u8
-                + state[d * COLS + l] as u8
-                + state[d * COLS + j] as u8
-                + state[d * COLS + r] as u8;
-            buf[i * COLS + j] = if state[i * COLS + j] {
-                (n_neighbors == 2) | (n_neighbors == 3)
-            } else {
-                n_neighbors == 3
-            };
-        }
-    }
-    buf
-}
-
-/// Map a Conway cell's heat to a fire colour: white-hot when just alive,
-/// cooling through orange and deep red to black as the afterglow fades.
-// ponytail: channel ceilings kept low so a fully-lit board stays under the
-// brightness budget; raise them if the panel can take it.
-fn ember(heat: u8) -> RGB8 {
-    let h = heat as u16;
-    RGB8 {
-        r: (h * 90 / 255) as u8,
-        g: (h.saturating_sub(80) * 90 / 175) as u8,
-        b: (h.saturating_sub(180) * 60 / 75) as u8,
+    /// Calm dims the palette to ~40%, churn drives it to full. (viz idea #2)
+    fn intensity(&self) -> u8 {
+        96 + (self.activity as u16 * 159 / 255) as u8
     }
 }
 
-fn smear(x1: f32, x2: f32, y1: f32, y2: f32, scale: f32) -> f32 {
-    let dist = |d: f32| d.min(1. - d);
-    let dx = dist((x1 - x2).abs());
-    let dy = dist((y1 - y2).abs());
-
-    let distance = pow(dx, 2) + pow(dy, 2);
-
-    expf(-distance / scale)
-
-    // let beta = 0.5 + distance;
-    // let beta_clipped = if beta < 1.0 { beta } else { 1.0 };
-    // powi(beta_clipped, 4) * powi(1.0 - beta_clipped, 4) / 0.0625
-}
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn test_pow() {
-        assert_abs_diff_eq!(pow(2.0, 0), 1.0);
-        assert_abs_diff_eq!(pow(2.0, 1), 2.0);
-        assert_abs_diff_eq!(pow(2.0, 2), 4.0);
-        assert_abs_diff_eq!(pow(2.0, 3), 8.0);
-        assert_abs_diff_eq!(pow(0.5, 2), 0.25);
-    }
-    #[test]
-    fn smear_ramps() {
-        assert_abs_diff_eq!(smear(0.0, 0.0, 0.0, 0.0, 100.0), 1.0);
-        let mid = smear(0.0, 0.1, 0.0, 0.0, 0.05);
-        assert!(0.0 < mid);
-        assert!(mid < 1.0);
-        assert_abs_diff_eq!(smear(0.0, 0.5, 0.0, 0.0, 0.001), 0.0);
-    }
-    #[test]
-    fn move_handled_boundary() {
-        let mut point = Point {
-            x: 0.9,
-            y: 0.0,
-            dx: 0.2,
-            dy: -0.1,
-            ..Point::default()
-        };
-        point.mv();
-        assert_abs_diff_eq!(point.x, 0.1);
-        assert_abs_diff_eq!(point.y, 0.9);
-    }
 
     #[test]
     fn snake_grid_reverses_odd_rows() {
         let mut points = [];
-        let grid = Grid::new(&mut points, [false; N_LEDS]);
+        let grid = Grid::builder(&mut points).build();
         // even rows run left-to-right, odd rows right-to-left (15-wide snake).
         assert_eq!(grid.ix_to_grid(0), (0, 0));
         assert_eq!(grid.ix_to_grid(1), (1, 0));
@@ -229,92 +240,30 @@ mod tests {
             scale: 0.01,
             ..Point::default()
         }];
-        let grid = Grid::new(&mut points, [false; N_LEDS]);
-        let near = grid.render_points_for_led(0).r;
-        let far = grid.render_points_for_led(N_LEDS / 2).r;
-        assert!(
-            near > far,
-            "LED at the point ({near}) should outshine a far LED ({far})"
-        );
-        assert_eq!(
-            far, 0,
-            "a point half the grid away should not light this LED"
-        );
-    }
-
-    fn board(cells: &[(usize, usize)]) -> [bool; N_LEDS] {
-        let mut state = [false; N_LEDS];
-        for &(x, y) in cells {
-            state[y * COLS + x] = true;
-        }
-        state
-    }
-
-    fn live(state: &[bool; N_LEDS]) -> Vec<(usize, usize)> {
-        let mut out = Vec::new();
-        for y in 0..ROWS {
-            for x in 0..COLS {
-                if state[y * COLS + x] {
-                    out.push((x, y));
-                }
-            }
-        }
-        out
+        let grid = Grid::builder(&mut points).seed(Seed::Empty).build();
+        let near = grid.render_led(0).r;
+        let far = grid.render_led(N_LEDS / 2).r;
+        assert!(near > far, "point LED ({near}) should outshine a far LED ({far})");
+        assert_eq!(far, 0, "a point half the grid away should not light this LED");
     }
 
     #[test]
-    fn conway_heat_leaves_a_fading_ember() {
+    fn seeded_board_lights_up_and_keeps_burning_after_update() {
         let mut points = [];
-        let mut grid = Grid::new(&mut points, board(&[(5, 5)]));
-        assert_eq!(grid.conway_heat[5 * COLS + 5], u8::MAX);
-        grid.update(); // lone cell dies, but its heat should linger and cool
-        let h = grid.conway_heat[5 * COLS + 5];
-        assert!(0 < h && h < u8::MAX, "dead cell should leave a fading ember, got {h}");
+        let mut grid = Grid::builder(&mut points).seed(Seed::Glider).build();
+        assert!(grid.brightness() > 0, "a seeded board should light some LEDs");
+        grid.update();
+        assert!(grid.brightness() > 0, "the afterglow should persist across a frame");
     }
 
     #[test]
-    fn conway_empty_stays_empty() {
-        assert!(live(&conway_update(&[false; N_LEDS])).is_empty());
-    }
-
-    #[test]
-    fn conway_block_is_stable() {
-        let block = board(&[(1, 1), (2, 1), (1, 2), (2, 2)]);
-        assert_eq!(live(&conway_update(&block)), live(&block));
-    }
-
-    #[test]
-    fn conway_blinker_oscillates_with_period_two() {
-        let vertical = board(&[(7, 4), (7, 5), (7, 6)]);
-        let horizontal = conway_update(&vertical);
-        assert_eq!(live(&horizontal), vec![(6, 5), (7, 5), (8, 5)]);
-        assert_eq!(live(&conway_update(&horizontal)), live(&vertical));
-    }
-
-    #[test]
-    fn conway_folds_over_left_right_edge() {
-        // horizontal blinker straddling the column seam (…, 14, 0, 1) rotates
-        // to vertical only if the left and right neighbours wrap around.
-        let seam = board(&[(COLS - 1, 5), (0, 5), (1, 5)]);
-        assert_eq!(live(&conway_update(&seam)), vec![(0, 4), (0, 5), (0, 6)]);
-    }
-
-    #[test]
-    fn conway_folds_over_top_bottom_edge() {
-        // vertical blinker straddling the row seam (…, 9, 0, 1) rotates to
-        // horizontal only if the up and down neighbours wrap around.
-        let seam = board(&[(7, ROWS - 1), (7, 0), (7, 1)]);
-        assert_eq!(live(&conway_update(&seam)), vec![(6, 0), (7, 0), (8, 0)]);
-    }
-
-    #[test]
-    fn conway_folds_over_corner_diagonally() {
-        // the three cells diagonally around corner (0, 0) are only its
-        // neighbours if both axes wrap; they should birth the corner.
-        let corners = board(&[(COLS - 1, ROWS - 1), (0, ROWS - 1), (COLS - 1, 0)]);
-        assert!(
-            conway_update(&corners)[0],
-            "corner (0,0) should be born from its three wrapped neighbours"
-        );
+    fn reseed_swaps_the_pattern() {
+        let mut points = [];
+        let mut grid = Grid::builder(&mut points).seed(Seed::Glider).build();
+        let lit = grid.brightness();
+        grid.reseed(Seed::Empty);
+        assert_eq!(grid.brightness(), 0, "reseeding to Empty clears the board");
+        grid.reseed(Seed::Acorn);
+        assert!(grid.brightness() > 0 && grid.brightness() != lit);
     }
 }

@@ -86,9 +86,33 @@ are bigger.
 5. **Two-channel interference** — a second independent Life board on the blue
    channel, Conway on red; overlaps glow magenta. Doubles the state array.
 
+## Using it
+
+Everything above is live and switchable via the builder / `Config` — ready for
+hardware controls to flip at runtime (`grid.reseed(..)`, `grid.set_config(..)`):
+
+```rust
+let mut grid = Grid::builder(&mut points)
+    .seed(Seed::Acorn)          // any pattern above
+    .palette(Palette::Fire)     // Fire | Ice | Toxic | RainbowByAge | SpatialRainbow
+    .rule(Rule::Conway)         // Conway | Wildfire  (#4)
+    .tint_by_field(true)        // flames pick up the point-field hue  (#1)
+    .reactive(false)            // brightness tracks board churn        (#2)
+    .two_channel(false)         // second Life board on blue            (#5)
+    .build();
+```
+
+| Viz idea | Control |
+|----------|---------|
+| #1 flame tint | `.tint_by_field(true)` |
+| #2 activity-reactive | `.reactive(true)` |
+| #3 spatial hue | `.palette(Palette::SpatialRainbow)` |
+| #4 wildfire | `.rule(Rule::Wildfire)` |
+| #5 two-channel | `.two_channel(true)` |
+
 ## Palettes (heat → colour)
 
-- **Fire** (current) — white-hot → orange → deep red → black.
+- **Fire** — white-hot → orange → deep red → black.
 - **Ice** — white → cyan → blue → black.
 - **Toxic** — white → green → dark green → black.
 - **Rainbow-by-age** — hue rotates with heat instead of a fixed ramp.
