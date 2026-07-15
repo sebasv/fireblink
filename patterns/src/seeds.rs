@@ -16,6 +16,30 @@ pub enum Seed {
 }
 
 impl Seed {
+    /// Cyclable patterns for the seed control — `Empty` is deliberately excluded
+    /// so the button never lands on a blank board.
+    pub const ALL: [Seed; 7] = [
+        Seed::Glider,
+        Seed::Lwss,
+        Seed::RPentomino,
+        Seed::Acorn,
+        Seed::Pentadecathlon,
+        Seed::Beacon,
+        Seed::Toad,
+    ];
+
+    pub fn index(self) -> usize {
+        Self::ALL.iter().position(|&s| s == self).unwrap_or(0)
+    }
+
+    pub fn next(self) -> Seed {
+        Self::ALL[(self.index() + 1) % Self::ALL.len()]
+    }
+
+    pub fn prev(self) -> Seed {
+        Self::ALL[(self.index() + Self::ALL.len() - 1) % Self::ALL.len()]
+    }
+
     /// Methuselah seeds that evolve chaotically and collapse into short cycles
     /// on this small torus — the ones worth auto-advancing through. Oscillators
     /// and spaceships are left out: they sustain themselves.
