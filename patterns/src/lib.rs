@@ -10,7 +10,7 @@ mod point;
 mod seeds;
 
 pub use life::Rule;
-pub use palette::Palette;
+pub use palette::{Blend, Palette};
 pub use point::Point;
 pub use seeds::Seed;
 
@@ -81,6 +81,8 @@ pub struct Config {
     pub palette: Palette,
     /// Palette for channel B's ember contribution. (viz idea #5)
     pub palette_b: Palette,
+    /// How the two channels combine: additive RGB, or channel-balance-as-hue.
+    pub blend: Blend,
     /// Flames pick up the drifting point field's hue. (viz idea #1)
     pub tint_by_field: bool,
     /// Palette brightness tracks how much the board is churning. (viz idea #2)
@@ -100,6 +102,7 @@ impl Default for Config {
             rule_b: None,
             palette: Palette::Fire,
             palette_b: Palette::Ice,
+            blend: Blend::Add,
             tint_by_field: false,
             reactive: false,
             gravity: false,
@@ -147,6 +150,10 @@ impl<'a> GridBuilder<'a> {
     }
     pub fn palette_b(mut self, palette: Palette) -> Self {
         self.config.palette_b = palette;
+        self
+    }
+    pub fn blend(mut self, blend: Blend) -> Self {
+        self.config.blend = blend;
         self
     }
     pub fn tint_by_field(mut self, on: bool) -> Self {
@@ -370,6 +377,19 @@ impl<'a> Grid<'a> {
         let idx = y_u * COLS + x_u;
 
         let ambient = point::field(&*self.points, x_u, y_u);
+
+        // Hue-balance mode replaces the additive channel combination: the two
+        // heats fold into one hue-on-balance colour, with the drifting field
+        // added on top. (Ignores the per-channel palettes and tint/reactive,
+        // which are additive-mode modifiers.)
+        if self.config.rule_b.is_some() && self.config.blend == Blend::HueBalance {
+            let mut color = palette::hue_balance(self.heat_a[idx], self.heat_b[idx]);
+            color.r = color.r.saturating_add(ambient.r);
+            color.g = color.g.saturating_add(ambient.g);
+            color.b = color.b.saturating_add(ambient.b);
+            return color;
+        }
+
         let mut color = ambient;
 
         let mut ember = palette::color(self.config.palette, self.heat_a[idx], x_u, y_u);

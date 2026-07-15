@@ -13,8 +13,8 @@ use esp_hal::main;
 
 use esp_hal::{delay::Delay, rmt::Rmt, time::Rate};
 use esp_hal_smartled::{SmartLedsAdapter, smart_led_buffer};
-use patterns::{Grid, N_LEDS, Palette, Point, Rule, Seed};
-use smart_leds::{RGB8, SmartLedsWrite};
+use patterns::{Blend, Grid, N_LEDS, Palette, Point, Rule, Seed};
+use smart_leds::SmartLedsWrite;
 
 // This creates a default app-descriptor required by the esp-idf bootloader.
 // For more information see: <https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/app_image_format.html#application-description>
@@ -33,65 +33,19 @@ fn main() -> ! {
 
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
-    // Four fat particles bouncing in a box; elastic collisions spark the heat
-    // buffer on impact, flaring through the palette. Distinct head colours make
-    // it easy to see who hit whom.
-    let mut points = [
-        Point {
-            x: 0.20,
-            y: 0.30,
-            dx: 0.018,
-            dy: 0.011,
-            scale: 0.02,
-            color: RGB8 {
-                r: 90,
-                g: 40,
-                b: 40,
-            },
-        },
-        Point {
-            x: 0.70,
-            y: 0.60,
-            dx: -0.015,
-            dy: 0.013,
-            scale: 0.02,
-            color: RGB8 {
-                r: 40,
-                g: 90,
-                b: 40,
-            },
-        },
-        Point {
-            x: 0.50,
-            y: 0.85,
-            dx: 0.012,
-            dy: -0.017,
-            scale: 0.02,
-            color: RGB8 {
-                r: 40,
-                g: 40,
-                b: 90,
-            },
-        },
-        Point {
-            x: 0.85,
-            y: 0.20,
-            dx: -0.014,
-            dy: 0.016,
-            scale: 0.02,
-            color: RGB8 {
-                r: 90,
-                g: 90,
-                b: 40,
-            },
-        },
-    ];
-    // Inert substrate (empty Conway board) so the heat buffer carries only the
-    // collision sparks; the bouncing particle field runs on top.
+    // No drifting field points for this demo — the picture is purely the two
+    // life channels.
+    let mut points: [Point; 0] = [];
+    // Channel A: a Conway glider over channel B's raindrop ripples. Hue-balance
+    // blend puts the glider (A) at the warm end and rain (B) at the cool end;
+    // overlaps slide through green instead of blowing out to white. Flip
+    // `.blend(Blend::Add)` to compare against the additive Fire/Ice version.
     let mut grid = Grid::builder(&mut points)
-        .rule(Rule::Conway { seed: Seed::Empty })
+        .rule(Rule::Conway { seed: Seed::Glider })
+        .rule_b(Rule::DEFAULT_RAINDROPS)
         .palette(Palette::Fire)
-        .collide(true)
+        .palette_b(Palette::Ice)
+        .blend(Blend::HueBalance)
         .build();
 
     let mut buf = smart_led_buffer!(N_LEDS);
