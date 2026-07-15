@@ -129,9 +129,9 @@ fn main() -> ! {
         let mut samples = [0u16; MIC_SAMPLES];
         for sample in samples.iter_mut() {
             *sample = loop {
-                match adc.read_oneshot(&mut mic) {
-                    Ok(value) => break value,
-                    Err(_) => {} // conversion not ready yet — retry
+                // Retry until the conversion is ready.
+                if let Ok(value) = adc.read_oneshot(&mut mic) {
+                    break value;
                 }
             };
         }
