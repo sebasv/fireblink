@@ -13,8 +13,8 @@ use esp_hal::main;
 
 use esp_hal::{delay::Delay, rmt::Rmt, time::Rate};
 use esp_hal_smartled::{SmartLedsAdapter, smart_led_buffer};
-use patterns::{Grid, N_LEDS, Palette, Point, Rule, Seed};
-use smart_leds::{RGB8, SmartLedsWrite};
+use patterns::{Blend, Grid, N_LEDS, Palette, Point, Rule, Seed};
+use smart_leds::SmartLedsWrite;
 
 // This creates a default app-descriptor required by the esp-idf bootloader.
 // For more information see: <https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/app_image_format.html#application-description>
@@ -33,54 +33,19 @@ fn main() -> ! {
 
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
-    // Three test masses orbiting the central well. Each starts offset from
-    // centre with a tangential velocity (perpendicular to the radius) so it
-    // orbits rather than plunges; bright heads over palette-coloured tails.
-    let mut points = [
-        Point {
-            x: 0.5,
-            y: 0.15,
-            dx: 0.035,
-            dy: 0.0,
-            scale: 0.008,
-            color: RGB8 {
-                r: 90,
-                g: 90,
-                b: 90,
-            },
-        },
-        Point {
-            x: 0.5,
-            y: 0.85,
-            dx: -0.030,
-            dy: 0.0,
-            scale: 0.008,
-            color: RGB8 {
-                r: 90,
-                g: 55,
-                b: 20,
-            },
-        },
-        Point {
-            x: 0.20,
-            y: 0.5,
-            dx: 0.0,
-            dy: 0.040,
-            scale: 0.008,
-            color: RGB8 {
-                r: 40,
-                g: 70,
-                b: 90,
-            },
-        },
-    ];
-    // Inert substrate (empty Conway board) so the heat buffer carries only the
-    // comet trails; gravity drives the particle field on top.
+    // No drifting field points for this demo — the picture is purely the two
+    // life channels.
+    let mut points: [Point; 0] = [];
+    // Channel A: a Conway glider over channel B's raindrop ripples. Hue-balance
+    // blend puts the glider (A) at the warm end and rain (B) at the cool end;
+    // overlaps slide through green instead of blowing out to white. Flip
+    // `.blend(Blend::Add)` to compare against the additive Fire/Ice version.
     let mut grid = Grid::builder(&mut points)
-        .rule(Rule::Conway)
-        .seed(Seed::Empty)
+        .rule(Rule::Conway { seed: Seed::Glider })
+        .rule_b(Rule::DEFAULT_RAINDROPS)
         .palette(Palette::Fire)
-        .gravity(true)
+        .palette_b(Palette::Ice)
+        .blend(Blend::HueBalance)
         .build();
 
     let mut buf = smart_led_buffer!(N_LEDS);

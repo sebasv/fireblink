@@ -22,6 +22,18 @@ pub enum Palette {
     SpatialRainbow,
 }
 
+/// How the two channels are combined into one colour.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Blend {
+    /// Sum the channels' palette colours in RGB. Bright, but overlaps saturate
+    /// toward white and lose which channel was where.
+    Add,
+    /// Put the channel *balance* on the hue wheel and the *total* on brightness,
+    /// so overlaps stay distinct instead of washing out. Ignores the per-channel
+    /// palettes (the hue comes from the balance, not from Fire/Ice).
+    HueBalance,
+}
+
 pub(crate) fn color(p: Palette, heat: u8, x: usize, y: usize) -> RGB8 {
     let h = heat as u16;
     match p {
@@ -108,6 +120,19 @@ fn dim(c: RGB8, heat: u8) -> RGB8 {
     }
 }
 
+/// Combine two channel heats on the hue wheel: the balance `heat_a - heat_b`
+/// picks the hue — A at the warm (red) end, B at the cool (blue) end, an even
+/// mix in the green middle — and the total picks the brightness. Never
+/// saturates to white; the "difference" between the channels stays visible.
+pub(crate) fn hue_balance(heat_a: u8, heat_b: u8) -> RGB8 {
+    let diff = heat_a as i16 - heat_b as i16; // -255..=255, positive = A dominant
+    // (255 - diff) in 0..=510 → hue 0 (red, A) .. 85 (green) .. 170 (blue, B),
+    // an arc that never wraps back onto red, so the two ends stay distinct.
+    let hue = ((255 - diff) as u32 * 170 / 510) as u8;
+    let total = (heat_a as u16 + heat_b as u16).min(255) as u8;
+    dim(wheel(hue), total)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -131,6 +156,20 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn hue_balance_leans_warm_for_a_and_cool_for_b() {
+        let a = hue_balance(255, 0); // A dominant → warm
+        let b = hue_balance(0, 255); // B dominant → cool
+        assert!(a.r > a.b, "A-dominant should lean red");
+        assert!(b.b > b.r, "B-dominant should lean blue");
+        // an even overlap stays a definite colour, never white
+        let mid = hue_balance(255, 255);
+        assert!(
+            !(mid.r == mid.g && mid.g == mid.b),
+            "a balanced overlap should keep a hue, not wash to grey/white"
+        );
     }
 
     #[test]

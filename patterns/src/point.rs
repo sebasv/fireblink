@@ -82,6 +82,59 @@ fn pow(f: f32, i: usize) -> f32 {
     out
 }
 
+/// Equal-mass elastic collisions inside a box (walls at 0 and 1). A hit swaps
+/// the velocity components along the line of centres and nudges the pair apart
+/// so they don't stick; walls reflect the velocity. Collision midpoints are
+/// written to `hits` (up to its length) for the caller to spark; returns how
+/// many were recorded. Uses plain (non-wrapping) distance — the box confines
+/// particles, so there's no seam to wrap across.
+pub(crate) fn collide(points: &mut [Point], radius: f32, hits: &mut [(f32, f32)]) -> usize {
+    let mut n_hits = 0;
+    let min_d = 2.0 * radius;
+    let n = points.len();
+    for i in 0..n {
+        let (head, tail) = points.split_at_mut(i + 1);
+        let a = &mut head[i];
+        for b in tail.iter_mut() {
+            let dx = b.x - a.x;
+            let dy = b.y - a.y;
+            let d2 = dx * dx + dy * dy;
+            if d2 >= min_d * min_d || d2 == 0.0 {
+                continue;
+            }
+            let dist = sqrtf(d2);
+            let (nx, ny) = (dx / dist, dy / dist);
+            let vrel = (b.dx - a.dx) * nx + (b.dy - a.dy) * ny;
+            if vrel < 0.0 {
+                // approaching: exchange the normal velocity components
+                a.dx += vrel * nx;
+                a.dy += vrel * ny;
+                b.dx -= vrel * nx;
+                b.dy -= vrel * ny;
+            }
+            if n_hits < hits.len() {
+                hits[n_hits] = ((a.x + b.x) * 0.5, (a.y + b.y) * 0.5);
+                n_hits += 1;
+            }
+            // separate along the normal so they clear next frame
+            let push = (min_d - dist) * 0.5;
+            a.x -= nx * push;
+            a.y -= ny * push;
+            b.x += nx * push;
+            b.y += ny * push;
+        }
+    }
+    for p in points.iter_mut() {
+        if (p.x + p.dx) < 0.0 || (p.x + p.dx) > 1.0 {
+            p.dx = -p.dx;
+        }
+        if (p.y + p.dy) < 0.0 || (p.y + p.dy) > 1.0 {
+            p.dy = -p.dy;
+        }
+    }
+    n_hits
+}
+
 /// Gaussian falloff between two toroidal grid positions.
 pub(crate) fn smear(x1: f32, x2: f32, y1: f32, y2: f32, scale: f32) -> f32 {
     let dist = |d: f32| d.min(1. - d);
@@ -123,6 +176,46 @@ mod tests {
         gravitate(&mut pts, (0.5, 0.5), 0.001, 0.1);
         assert!(pts[0].dx > 0.0, "should accelerate toward the well in +x");
         assert_abs_diff_eq!(pts[0].dy, 0.0);
+    }
+
+    #[test]
+    fn collision_swaps_velocities_head_on() {
+        let mut pts = [
+            Point {
+                x: 0.40,
+                y: 0.5,
+                dx: 0.02,
+                dy: 0.0,
+                ..Point::default()
+            },
+            Point {
+                x: 0.44,
+                y: 0.5,
+                ..Point::default()
+            },
+        ];
+        let mut hits = [(0.0, 0.0); 4];
+        let n = collide(&mut pts, 0.05, &mut hits); // min_d 0.10 > gap 0.04 → collide
+        assert_abs_diff_eq!(pts[0].dx, 0.0, epsilon = 1e-6);
+        assert!(pts[1].dx > 0.0, "the struck particle takes over the motion");
+        assert_eq!(n, 1, "one collision recorded");
+    }
+
+    #[test]
+    fn collision_reflects_off_the_wall() {
+        let mut pts = [Point {
+            x: 0.98,
+            y: 0.5,
+            dx: 0.05,
+            dy: 0.0,
+            ..Point::default()
+        }];
+        let mut hits = [(0.0, 0.0); 1];
+        collide(&mut pts, 0.05, &mut hits);
+        assert!(
+            pts[0].dx < 0.0,
+            "a particle heading into the wall bounces back"
+        );
     }
 
     #[test]
