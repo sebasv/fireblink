@@ -39,6 +39,21 @@ const SETTLE: u32 = 12;
 /// Hard ceiling of frames per seed (~16 s), so nothing lingers forever.
 const MAX_FRAMES: u32 = 120;
 
+/// Single central gravity well, in normalised board coordinates.
+const WELL: (f32, f32) = (0.5, 0.5);
+/// Well strength and Plummer softening for `Config::gravity`.
+// ponytail: the two knobs to tune orbits — raise GRAVITY for tighter/faster
+// orbits, raise SOFTENING to tame close passes. Bound orbits want them paired.
+const GRAVITY: f32 = 0.0002;
+const SOFTENING: f32 = 0.12;
+
+/// Board cell covering normalised position `(x, y)`, row-major.
+fn cell_of(x: f32, y: f32) -> usize {
+    let cx = ((x * COLS as f32) as usize).min(COLS - 1);
+    let cy = ((y * ROWS as f32) as usize).min(ROWS - 1);
+    cy * COLS + cx
+}
+
 /// Everything a control surface can flip at runtime.
 #[derive(Clone, Copy)]
 pub struct Config {
@@ -53,6 +68,9 @@ pub struct Config {
     pub reactive: bool,
     /// Run a second Life board on the blue channel. (viz idea #5)
     pub two_channel: bool,
+    /// Particles orbit a central gravity well and stamp comet trails into the
+    /// heat buffer. Layers on the point field, independent of the `rule`.
+    pub gravity: bool,
 }
 
 impl Default for Config {
@@ -65,6 +83,7 @@ impl Default for Config {
             tint_by_field: false,
             reactive: false,
             two_channel: false,
+            gravity: false,
         }
     }
 }
@@ -119,6 +138,10 @@ impl<'a> GridBuilder<'a> {
     }
     pub fn two_channel(mut self, on: bool) -> Self {
         self.config.two_channel = on;
+        self
+    }
+    pub fn gravity(mut self, on: bool) -> Self {
+        self.config.gravity = on;
         self
     }
     pub fn config(mut self, config: Config) -> Self {
@@ -188,6 +211,9 @@ impl<'a> Grid<'a> {
     }
 
     pub fn update(&mut self) {
+        if self.config.gravity {
+            point::gravitate(self.points, WELL, GRAVITY, SOFTENING);
+        }
         self.points.iter_mut().for_each(Point::mv);
 
         let current = self.state_a;
@@ -215,7 +241,20 @@ impl<'a> Grid<'a> {
             self.state_b = next;
         }
 
+        if self.config.gravity {
+            self.stamp_trails();
+        }
         self.maybe_advance();
+    }
+
+    /// Reheat each particle's cell (and the well) to full, after the board's
+    /// `decay_heat` has run. Next frame's decay fades these into comet trails.
+    fn stamp_trails(&mut self) {
+        for i in 0..self.points.len() {
+            let p = &self.points[i];
+            self.heat_a[cell_of(p.x, p.y)] = u8::MAX;
+        }
+        self.heat_a[cell_of(WELL.0, WELL.1)] = u8::MAX;
     }
 
     /// Auto-advance the slideshow: nonperiodic Conway seeds collapse into short

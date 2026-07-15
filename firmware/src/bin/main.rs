@@ -33,34 +33,54 @@ fn main() -> ! {
 
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
+    // Three test masses orbiting the central well. Each starts offset from
+    // centre with a tangential velocity (perpendicular to the radius) so it
+    // orbits rather than plunges; bright heads over palette-coloured tails.
     let mut points = [
-        // Point {
-        //     x: 0.,
-        //     y: 0.,
-        //     dx: 0.0,
-        //     dy: 0.0001,
-        //     scale: 0.1,
-        //     color: RGB8 {
-        //         r: 255,
-        //         g: 30,
-        //         b: 100,
-        //     },
-        // },
         Point {
-            x: 0.,
-            y: 0.,
-            dx: 0.001,
-            dy: 0.001,
-            scale: 0.01,
-            color: RGB8 { r: 1, g: 5, b: 1 },
+            x: 0.5,
+            y: 0.15,
+            dx: 0.035,
+            dy: 0.0,
+            scale: 0.008,
+            color: RGB8 {
+                r: 90,
+                g: 90,
+                b: 90,
+            },
+        },
+        Point {
+            x: 0.5,
+            y: 0.85,
+            dx: -0.030,
+            dy: 0.0,
+            scale: 0.008,
+            color: RGB8 {
+                r: 90,
+                g: 55,
+                b: 20,
+            },
+        },
+        Point {
+            x: 0.20,
+            y: 0.5,
+            dx: 0.0,
+            dy: 0.040,
+            scale: 0.008,
+            color: RGB8 {
+                r: 40,
+                g: 70,
+                b: 90,
+            },
         },
     ];
+    // Inert substrate (empty Conway board) so the heat buffer carries only the
+    // comet trails; gravity drives the particle field on top.
     let mut grid = Grid::builder(&mut points)
-        .rule(Rule::DEFAULT_RAINDROPS)
-        .seed(Seed::Glider)
-        .palette(Palette::Ice)
-        // .two_channel(true)
-        // .tint_by_field(true)
+        .rule(Rule::Conway)
+        .seed(Seed::Empty)
+        .palette(Palette::Fire)
+        .gravity(true)
         .build();
 
     let mut buf = smart_led_buffer!(N_LEDS);
