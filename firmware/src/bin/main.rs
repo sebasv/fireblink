@@ -7,12 +7,9 @@
 )]
 #![deny(clippy::large_stack_frames)]
 
-use core::panic;
-
 use esp_backtrace as _;
 use esp_hal::clock::CpuClock;
 use esp_hal::main;
-use log::info;
 
 use esp_hal::{delay::Delay, rmt::Rmt, time::Rate};
 use esp_hal_smartled::{SmartLedsAdapter, smart_led_buffer};
@@ -76,57 +73,12 @@ fn main() -> ! {
     let delay = Delay::new();
 
     // ~7 generations/sec — fast enough to feel alive, slow enough to watch Life
-    // evolve on a 10×15 torus.
+    // evolve on a 10×15 torus. Seed cycling and brightness clipping are handled
+    // inside the Grid.
     const FRAME_MS: u32 = 130;
-    // How many recent board fingerprints to remember. A repeat within this
-    // window means we've fallen into a cycle of period <= HISTORY — the boring
-    // end-state (blinkers, still lifes). Period-15 oscillators escape it.
-    const HISTORY: usize = 6;
-    // Consecutive cyclic frames before advancing, so a brief coincidence
-    // doesn't cut a pattern short (~1.5 s).
-    const SETTLE: u32 = 12;
-    // Hard ceiling per seed (~16 s), so genuine long-period oscillators still
-    // move the slideshow along.
-    const MAX_FRAMES: u32 = 120;
-    let seeds = [
-        Seed::Acorn,
-        Seed::RPentomino,
-        Seed::Lwss,
-        Seed::Glider,
-        Seed::Pentadecathlon,
-        Seed::Toad,
-        Seed::Beacon,
-    ];
-
-    let mut si = 0;
-    let mut history = [0u64; HISTORY];
-    let mut settled = 0u32;
-    let mut on_seed = 0u32;
     loop {
-        if grid.brightness() > 75 * 255 * 3 {
-            panic!("Too much brightness")
-        }
         led.write(grid.render()).expect("Write failed");
         grid.update();
-
-        // Seed-cycling is a Conway concern (its patterns die into short cycles
-        // on this small torus). Wildfire and Raindrops sustain themselves.
-        if matches!(grid.config().rule, Rule::Conway) {
-            on_seed += 1;
-            let fp = grid.fingerprint();
-            let cycling = history.contains(&fp);
-            history[on_seed as usize % HISTORY] = fp;
-            settled = if cycling { settled + 1 } else { 0 };
-
-            if settled > SETTLE || on_seed > MAX_FRAMES {
-                si = (si + 1) % seeds.len();
-                grid.reseed(seeds[si]);
-                history = [0u64; HISTORY];
-                settled = 0;
-                on_seed = 0;
-                info!("Reseed → {}", si);
-            }
-        }
 
         delay.delay_millis(FRAME_MS);
     }
