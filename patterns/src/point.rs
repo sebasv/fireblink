@@ -1,8 +1,13 @@
 //! The drifting light field: soft coloured blobs that move and wrap.
 
-use crate::{COLS, ROWS};
-use libm::{expf, sqrtf};
+use crate::{COLS, ROWS, palette};
+use libm::{cosf, expf, sinf, sqrtf};
 use smart_leds::RGB8;
+
+/// Hue-cycled point colours are dimmed to this fraction of full brightness so a
+/// blob stays an accent, not a floodlight.
+// ponytail: raise the divisor to dim hue points further.
+const HUE_DIM: u8 = 4;
 
 #[derive(Default)]
 pub struct Point {
@@ -12,12 +17,32 @@ pub struct Point {
     pub dy: f32,
     pub color: RGB8,
     pub scale: f32,
+    /// Radians the velocity rotates per frame; `0` = straight drift, small
+    /// values trace orbits and arcs.
+    pub turn: f32,
+    /// Current hue, advanced by `hue_rate` each frame.
+    pub hue: u8,
+    /// Hue steps per frame; `0` keeps the static `color`.
+    pub hue_rate: u8,
 }
 
 impl Point {
     pub fn mv(&mut self) {
+        if self.turn != 0.0 {
+            let (s, c) = (sinf(self.turn), cosf(self.turn));
+            (self.dx, self.dy) = (self.dx * c - self.dy * s, self.dx * s + self.dy * c);
+        }
         self.x = wrap01(self.x + self.dx);
         self.y = wrap01(self.y + self.dy);
+        if self.hue_rate != 0 {
+            self.hue = self.hue.wrapping_add(self.hue_rate);
+            let c = palette::wheel(self.hue);
+            self.color = RGB8 {
+                r: c.r / HUE_DIM,
+                g: c.g / HUE_DIM,
+                b: c.b / HUE_DIM,
+            };
+        }
     }
 }
 
@@ -244,5 +269,41 @@ mod tests {
         point.mv();
         assert_abs_diff_eq!(point.x, 0.1);
         assert_abs_diff_eq!(point.y, 0.9);
+    }
+
+    #[test]
+    fn turn_rotates_the_velocity() {
+        let mut point = Point {
+            dx: 0.01,
+            dy: 0.0,
+            turn: core::f32::consts::FRAC_PI_2,
+            ..Point::default()
+        };
+        point.mv();
+        // a quarter turn sends +x velocity to +y
+        assert_abs_diff_eq!(point.dx, 0.0, epsilon = 1e-6);
+        assert_abs_diff_eq!(point.dy, 0.01, epsilon = 1e-6);
+    }
+
+    #[test]
+    fn hue_rate_cycles_the_colour_and_zero_keeps_it_static() {
+        let mut cycling = Point {
+            hue_rate: 10,
+            ..Point::default()
+        };
+        cycling.mv();
+        assert_eq!(cycling.hue, 10);
+        assert!(cycling.color.r > 0, "hue cycling should light the colour");
+
+        let mut fixed = Point {
+            color: RGB8 { r: 3, g: 5, b: 7 },
+            ..Point::default()
+        };
+        fixed.mv();
+        assert_eq!(
+            fixed.color,
+            RGB8 { r: 3, g: 5, b: 7 },
+            "static colour preserved"
+        );
     }
 }

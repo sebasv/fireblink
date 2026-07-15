@@ -13,7 +13,7 @@ use esp_hal::main;
 
 use esp_hal::{delay::Delay, rmt::Rmt, time::Rate};
 use esp_hal_smartled::{SmartLedsAdapter, smart_led_buffer};
-use patterns::{Blend, Grid, N_LEDS, Palette, Point, Rule, Seed};
+use patterns::{Grid, N_LEDS, Point, Rule, Seed};
 use smart_leds::SmartLedsWrite;
 
 // This creates a default app-descriptor required by the esp-idf bootloader.
@@ -33,19 +33,46 @@ fn main() -> ! {
 
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
-    // No drifting field points for this demo — the picture is purely the two
-    // life channels.
-    let mut points: [Point; 0] = [];
-    // Channel A: a Conway glider over channel B's raindrop ripples. Hue-balance
-    // blend puts the glider (A) at the warm end and rain (B) at the cool end;
-    // overlaps slide through green instead of blowing out to white. Flip
-    // `.blend(Blend::Add)` to compare against the additive Fire/Ice version.
+    // Living points: `turn` curves each blob's velocity every frame so it
+    // orbits, and `hue_rate` walks its colour round the wheel. Different spins
+    // and cycle speeds keep the three from moving in lockstep.
+    let mut points = [
+        Point {
+            x: 0.5,
+            y: 0.5,
+            dx: 0.020,
+            dy: 0.0,
+            turn: 0.06,
+            hue_rate: 2,
+            scale: 0.012,
+            ..Point::default()
+        },
+        Point {
+            x: 0.30,
+            y: 0.70,
+            dx: 0.0,
+            dy: 0.018,
+            turn: -0.05,
+            hue: 90,
+            hue_rate: 3,
+            scale: 0.012,
+            ..Point::default()
+        },
+        Point {
+            x: 0.70,
+            y: 0.30,
+            dx: -0.015,
+            dy: 0.010,
+            turn: 0.04,
+            hue: 180,
+            hue_rate: 5,
+            scale: 0.012,
+            ..Point::default()
+        },
+    ];
+    // Inert board — the picture is purely the orbiting, hue-cycling blobs.
     let mut grid = Grid::builder(&mut points)
-        .rule(Rule::Conway { seed: Seed::Glider })
-        .rule_b(Rule::DEFAULT_RAINDROPS)
-        .palette(Palette::Fire)
-        .palette_b(Palette::Ice)
-        .blend(Blend::HueBalance)
+        .rule(Rule::Conway { seed: Seed::Empty })
         .build();
 
     let mut buf = smart_led_buffer!(N_LEDS);
