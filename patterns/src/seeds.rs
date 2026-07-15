@@ -3,7 +3,7 @@
 use crate::{COLS, N_LEDS, ROWS};
 
 /// A named starting pattern. Cell coordinates are `(x, y)` on the 15×10 board.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Seed {
     Empty,
     Glider,
@@ -16,6 +16,23 @@ pub enum Seed {
 }
 
 impl Seed {
+    /// Methuselah seeds that evolve chaotically and collapse into short cycles
+    /// on this small torus — the ones worth auto-advancing through. Oscillators
+    /// and spaceships are left out: they sustain themselves.
+    pub const NONPERIODIC: &'static [Seed] = &[Seed::RPentomino, Seed::Acorn];
+
+    pub fn is_nonperiodic(self) -> bool {
+        Self::NONPERIODIC.contains(&self)
+    }
+
+    /// The next nonperiodic seed in the rotation (wraps). Falls back to the
+    /// first if `self` isn't in the set.
+    pub fn next_nonperiodic(self) -> Seed {
+        let seeds = Self::NONPERIODIC;
+        let i = seeds.iter().position(|&s| s == self).unwrap_or(0);
+        seeds[(i + 1) % seeds.len()]
+    }
+
     const fn cells(self) -> &'static [(usize, usize)] {
         match self {
             Seed::Empty => &[],

@@ -25,6 +25,35 @@ const RNG_SEED: u32 = 0x9E37_79B9;
 /// Second channel is seeded half a board away from the first. (viz idea #5)
 const CHANNEL_B_SHIFT: (usize, usize) = (COLS / 2, ROWS / 2);
 
+/// Ceiling on the summed activation across every LED channel. `render` scales
+/// the whole frame down to fit, so a bright frame dims uniformly rather than
+/// browning out the PSU.
+// ponytail: raise if the panel/PSU can take a brighter board.
+const BRIGHTNESS_BUDGET: u32 = 75 * 255 * 3;
+
+/// Recent board fingerprints kept for cycle detection; a repeat means a cycle
+/// of period <= this. Period-15 oscillators (Pentadecathlon) escape it.
+const HISTORY: usize = 6;
+/// Consecutive cyclic frames before auto-advancing to the next seed (~1.5 s).
+const SETTLE: u32 = 12;
+/// Hard ceiling of frames per seed (~16 s), so nothing lingers forever.
+const MAX_FRAMES: u32 = 120;
+
+/// Single central gravity well, in normalised board coordinates.
+const WELL: (f32, f32) = (0.5, 0.5);
+/// Well strength and Plummer softening for `Config::gravity`.
+// ponytail: the two knobs to tune orbits — raise GRAVITY for tighter/faster
+// orbits, raise SOFTENING to tame close passes. Bound orbits want them paired.
+const GRAVITY: f32 = 0.0002;
+const SOFTENING: f32 = 0.12;
+
+/// Board cell covering normalised position `(x, y)`, row-major.
+fn cell_of(x: f32, y: f32) -> usize {
+    let cx = ((x * COLS as f32) as usize).min(COLS - 1);
+    let cy = ((y * ROWS as f32) as usize).min(ROWS - 1);
+    cy * COLS + cx
+}
+
 /// Everything a control surface can flip at runtime.
 #[derive(Clone, Copy)]
 pub struct Config {
@@ -39,6 +68,9 @@ pub struct Config {
     pub reactive: bool,
     /// Run a second Life board on the blue channel. (viz idea #5)
     pub two_channel: bool,
+    /// Particles orbit a central gravity well and stamp comet trails into the
+    /// heat buffer. Layers on the point field, independent of the `rule`.
+    pub gravity: bool,
 }
 
 impl Default for Config {
@@ -51,6 +83,7 @@ impl Default for Config {
             tint_by_field: false,
             reactive: false,
             two_channel: false,
+            gravity: false,
         }
     }
 }
@@ -67,6 +100,10 @@ pub struct Grid<'a> {
     /// Expanding-ripple state for each board under `Rule::Raindrops`.
     pond_a: life::Pond,
     pond_b: life::Pond,
+    /// Cycle detection for auto-advancing nonperiodic Conway seeds.
+    history: [u64; HISTORY],
+    settled: u32,
+    on_seed: u32,
 }
 
 pub struct GridBuilder<'a> {
@@ -103,6 +140,10 @@ impl<'a> GridBuilder<'a> {
         self.config.two_channel = on;
         self
     }
+    pub fn gravity(mut self, on: bool) -> Self {
+        self.config.gravity = on;
+        self
+    }
     pub fn config(mut self, config: Config) -> Self {
         self.config = config;
         self
@@ -125,6 +166,9 @@ impl<'a> GridBuilder<'a> {
             activity: 0,
             pond_a: life::Pond::new(),
             pond_b: life::Pond::new(),
+            history: [0; HISTORY],
+            settled: 0,
+            on_seed: 0,
         }
     }
 }
@@ -137,16 +181,39 @@ impl<'a> Grid<'a> {
         }
     }
 
+    /// Render every LED, uniformly dimming the whole frame if it would exceed
+    /// the brightness budget (so hue is preserved, only overall level drops).
     pub fn render(&self) -> impl Iterator<Item = RGB8> + '_ {
-        (0..N_LEDS).map(|ix| self.render_led(ix))
+        let total = self.brightness();
+        let clip = move |v: u8| {
+            if total > BRIGHTNESS_BUDGET {
+                (v as u32 * BRIGHTNESS_BUDGET / total) as u8
+            } else {
+                v
+            }
+        };
+        (0..N_LEDS).map(move |ix| {
+            let c = self.render_led(ix);
+            RGB8 {
+                r: clip(c.r),
+                g: clip(c.g),
+                b: clip(c.b),
+            }
+        })
     }
 
+    /// Summed activation the board *wants* to draw, before any clipping.
     pub fn brightness(&self) -> u32 {
-        self.render()
-            .fold(0u32, |a, p| a + p.r as u32 + p.g as u32 + p.b as u32)
+        (0..N_LEDS).fold(0u32, |a, ix| {
+            let c = self.render_led(ix);
+            a + c.r as u32 + c.g as u32 + c.b as u32
+        })
     }
 
     pub fn update(&mut self) {
+        if self.config.gravity {
+            point::gravitate(self.points, WELL, GRAVITY, SOFTENING);
+        }
         self.points.iter_mut().for_each(Point::mv);
 
         let current = self.state_a;
@@ -172,6 +239,44 @@ impl<'a> Grid<'a> {
             );
             life::decay_heat(&mut self.heat_b, &next);
             self.state_b = next;
+        }
+
+        if self.config.gravity {
+            self.stamp_trails();
+        }
+        self.maybe_advance();
+    }
+
+    /// Reheat each particle's cell (and the well) to full, after the board's
+    /// `decay_heat` has run. Next frame's decay fades these into comet trails.
+    fn stamp_trails(&mut self) {
+        for i in 0..self.points.len() {
+            let p = &self.points[i];
+            self.heat_a[cell_of(p.x, p.y)] = u8::MAX;
+        }
+        self.heat_a[cell_of(WELL.0, WELL.1)] = u8::MAX;
+    }
+
+    /// Auto-advance the slideshow: nonperiodic Conway seeds collapse into short
+    /// cycles on this small torus, so when the interesting transient is over
+    /// (a detected cycle, or a hard timeout) move to the next such seed. Only
+    /// these seeds cycle — oscillators, spaceships and the other rules sustain
+    /// themselves and are left running.
+    fn maybe_advance(&mut self) {
+        if self.config.rule != Rule::Conway || !self.config.seed.is_nonperiodic() {
+            return;
+        }
+        self.on_seed += 1;
+        let fp = self.fingerprint();
+        let cycling = self.history.contains(&fp);
+        self.history[self.on_seed as usize % HISTORY] = fp;
+        self.settled = if cycling { self.settled + 1 } else { 0 };
+
+        if self.settled > SETTLE || self.on_seed > MAX_FRAMES {
+            self.reseed(self.config.seed.next_nonperiodic());
+            self.history = [0; HISTORY];
+            self.settled = 0;
+            self.on_seed = 0;
         }
     }
 
@@ -201,7 +306,7 @@ impl<'a> Grid<'a> {
 
     /// FNV-1a hash of both boards. A repeat within the last few frames means
     /// the board has fallen into a short cycle (dead, still life, blinker …) —
-    /// the cue that the interesting transient is over. (see `main` reseed loop)
+    /// the cue that the interesting transient is over, used by `maybe_advance`.
     pub fn fingerprint(&self) -> u64 {
         let mut h: u64 = 0xcbf2_9ce4_8422_2325;
         for &c in self.state_a.iter().chain(self.state_b.iter()) {
@@ -327,5 +432,58 @@ mod tests {
         assert_eq!(grid.brightness(), 0, "reseeding to Empty clears the board");
         grid.reseed(Seed::Acorn);
         assert!(grid.brightness() > 0 && grid.brightness() != lit);
+    }
+
+    #[test]
+    fn render_clips_a_hot_frame_to_the_budget() {
+        // a broad, full-white point floods every LED well past the budget
+        let mut points = [Point {
+            x: 0.5,
+            y: 0.5,
+            color: [255, 255, 255].into(),
+            scale: 100.0,
+            ..Point::default()
+        }];
+        let grid = Grid::builder(&mut points).seed(Seed::Empty).build();
+        assert!(
+            grid.brightness() > BRIGHTNESS_BUDGET,
+            "test setup should exceed the budget before clipping"
+        );
+        let shown: u32 = grid
+            .render()
+            .map(|c| c.r as u32 + c.g as u32 + c.b as u32)
+            .sum();
+        assert!(
+            shown <= BRIGHTNESS_BUDGET,
+            "render must clip to the budget, got {shown}"
+        );
+    }
+
+    #[test]
+    fn nonperiodic_conway_seed_auto_advances_on_timeout() {
+        let mut points = [];
+        let mut grid = Grid::builder(&mut points).seed(Seed::Acorn).build();
+        for _ in 0..=MAX_FRAMES {
+            grid.update();
+        }
+        assert_eq!(
+            grid.config().seed,
+            Seed::RPentomino,
+            "Acorn should hand off to the next nonperiodic seed by the timeout"
+        );
+    }
+
+    #[test]
+    fn periodic_seed_is_left_running() {
+        let mut points = [];
+        let mut grid = Grid::builder(&mut points).seed(Seed::Toad).build();
+        for _ in 0..=MAX_FRAMES {
+            grid.update();
+        }
+        assert_eq!(
+            grid.config().seed,
+            Seed::Toad,
+            "an oscillator seed should never be auto-advanced"
+        );
     }
 }
