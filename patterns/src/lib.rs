@@ -47,6 +47,21 @@ const WELL: (f32, f32) = (0.5, 0.5);
 const GRAVITY: f32 = 0.0002;
 const SOFTENING: f32 = 0.12;
 
+/// Collision radius for `Config::collide`, in normalised units (particles
+/// touch when centres are within twice this).
+const COLLIDE_RADIUS: f32 = 0.07;
+/// Max collision sparks stamped per frame (a handful of particles at most).
+const MAX_HITS: usize = 16;
+
+/// Initial board for a channel: Conway starts from its seed; the other rules
+/// begin empty and ignite/spawn their own activity.
+fn initial_board(rule: Rule, ox: usize, oy: usize) -> [bool; N_LEDS] {
+    match rule {
+        Rule::Conway { seed } => seeds::board(seed, ox, oy),
+        _ => [false; N_LEDS],
+    }
+}
+
 /// Board cell covering normalised position `(x, y)`, row-major.
 fn cell_of(x: f32, y: f32) -> usize {
     let cx = ((x * COLS as f32) as usize).min(COLS - 1);
@@ -57,33 +72,38 @@ fn cell_of(x: f32, y: f32) -> usize {
 /// Everything a control surface can flip at runtime.
 #[derive(Clone, Copy)]
 pub struct Config {
-    pub seed: Seed,
-    pub palette: Palette,
-    /// Palette for the second board's ember contribution. (viz idea #5)
-    pub palette_b: Palette,
+    /// Channel A: the rule (and, for Conway, its seed) driving the main board.
     pub rule: Rule,
+    /// Channel B: an optional second board on the blue channel, with its own
+    /// rule — e.g. a Conway glider over raindrops. `None` = single channel.
+    /// (viz idea #5)
+    pub rule_b: Option<Rule>,
+    pub palette: Palette,
+    /// Palette for channel B's ember contribution. (viz idea #5)
+    pub palette_b: Palette,
     /// Flames pick up the drifting point field's hue. (viz idea #1)
     pub tint_by_field: bool,
     /// Palette brightness tracks how much the board is churning. (viz idea #2)
     pub reactive: bool,
-    /// Run a second Life board on the blue channel. (viz idea #5)
-    pub two_channel: bool,
     /// Particles orbit a central gravity well and stamp comet trails into the
-    /// heat buffer. Layers on the point field, independent of the `rule`.
+    /// heat buffer. Layers on the point field, independent of the rules.
     pub gravity: bool,
+    /// Particles bounce in a box and collide elastically, sparking the heat
+    /// buffer on impact. Layers on the point field, independent of the rules.
+    pub collide: bool,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Config {
-            seed: Seed::Glider,
+            rule: Rule::Conway { seed: Seed::Glider },
+            rule_b: None,
             palette: Palette::Fire,
             palette_b: Palette::Ice,
-            rule: Rule::Conway,
             tint_by_field: false,
             reactive: false,
-            two_channel: false,
             gravity: false,
+            collide: false,
         }
     }
 }
@@ -112,8 +132,13 @@ pub struct GridBuilder<'a> {
 }
 
 impl<'a> GridBuilder<'a> {
-    pub fn seed(mut self, seed: Seed) -> Self {
-        self.config.seed = seed;
+    pub fn rule(mut self, rule: Rule) -> Self {
+        self.config.rule = rule;
+        self
+    }
+    /// Enable a second channel with its own rule (e.g. Conway over raindrops).
+    pub fn rule_b(mut self, rule: Rule) -> Self {
+        self.config.rule_b = Some(rule);
         self
     }
     pub fn palette(mut self, palette: Palette) -> Self {
@@ -124,10 +149,6 @@ impl<'a> GridBuilder<'a> {
         self.config.palette_b = palette;
         self
     }
-    pub fn rule(mut self, rule: Rule) -> Self {
-        self.config.rule = rule;
-        self
-    }
     pub fn tint_by_field(mut self, on: bool) -> Self {
         self.config.tint_by_field = on;
         self
@@ -136,12 +157,12 @@ impl<'a> GridBuilder<'a> {
         self.config.reactive = on;
         self
     }
-    pub fn two_channel(mut self, on: bool) -> Self {
-        self.config.two_channel = on;
-        self
-    }
     pub fn gravity(mut self, on: bool) -> Self {
         self.config.gravity = on;
+        self
+    }
+    pub fn collide(mut self, on: bool) -> Self {
+        self.config.collide = on;
         self
     }
     pub fn config(mut self, config: Config) -> Self {
@@ -149,8 +170,11 @@ impl<'a> GridBuilder<'a> {
         self
     }
     pub fn build(self) -> Grid<'a> {
-        let state_a = seeds::board(self.config.seed, 0, 0);
-        let state_b = seeds::board(self.config.seed, CHANNEL_B_SHIFT.0, CHANNEL_B_SHIFT.1);
+        let state_a = initial_board(self.config.rule, 0, 0);
+        let state_b = match self.config.rule_b {
+            Some(rule) => initial_board(rule, CHANNEL_B_SHIFT.0, CHANNEL_B_SHIFT.1),
+            None => [false; N_LEDS],
+        };
         let mut heat_a = [0u8; N_LEDS];
         let mut heat_b = [0u8; N_LEDS];
         life::seed_heat(&mut heat_a, &state_a);
@@ -214,6 +238,12 @@ impl<'a> Grid<'a> {
         if self.config.gravity {
             point::gravitate(self.points, WELL, GRAVITY, SOFTENING);
         }
+        let mut hits = [(0.0f32, 0.0f32); MAX_HITS];
+        let n_hits = if self.config.collide {
+            point::collide(self.points, COLLIDE_RADIUS, &mut hits)
+        } else {
+            0
+        };
         self.points.iter_mut().for_each(Point::mv);
 
         let current = self.state_a;
@@ -228,10 +258,10 @@ impl<'a> Grid<'a> {
         life::decay_heat(&mut self.heat_a, &next);
         self.state_a = next;
 
-        if self.config.two_channel {
+        if let Some(rule_b) = self.config.rule_b {
             let current = self.state_b;
             let next = life::step(
-                self.config.rule,
+                rule_b,
                 &current,
                 &self.heat_b,
                 &mut self.rng,
@@ -243,6 +273,9 @@ impl<'a> Grid<'a> {
 
         if self.config.gravity {
             self.stamp_trails();
+        }
+        for &(x, y) in &hits[..n_hits] {
+            self.heat_a[cell_of(x, y)] = u8::MAX; // collision spark
         }
         self.maybe_advance();
     }
@@ -263,7 +296,10 @@ impl<'a> Grid<'a> {
     /// these seeds cycle — oscillators, spaceships and the other rules sustain
     /// themselves and are left running.
     fn maybe_advance(&mut self) {
-        if self.config.rule != Rule::Conway || !self.config.seed.is_nonperiodic() {
+        let Rule::Conway { seed } = self.config.rule else {
+            return;
+        };
+        if !seed.is_nonperiodic() {
             return;
         }
         self.on_seed += 1;
@@ -273,20 +309,19 @@ impl<'a> Grid<'a> {
         self.settled = if cycling { self.settled + 1 } else { 0 };
 
         if self.settled > SETTLE || self.on_seed > MAX_FRAMES {
-            self.reseed(self.config.seed.next_nonperiodic());
+            self.reseed(seed.next_nonperiodic());
             self.history = [0; HISTORY];
             self.settled = 0;
             self.on_seed = 0;
         }
     }
 
-    /// Reseed both boards — for a "next pattern" control.
+    /// Reseed channel A to a Conway pattern — the "next pattern" control and the
+    /// slideshow's auto-advance. Channel B is independent and untouched.
     pub fn reseed(&mut self, seed: Seed) {
-        self.config.seed = seed;
+        self.config.rule = Rule::Conway { seed };
         self.state_a = seeds::board(seed, 0, 0);
-        self.state_b = seeds::board(seed, CHANNEL_B_SHIFT.0, CHANNEL_B_SHIFT.1);
         life::seed_heat(&mut self.heat_a, &self.state_a);
-        life::seed_heat(&mut self.heat_b, &self.state_b);
     }
 
     /// Swap visual config — for palette/rule/mode controls. Does not reseed.
@@ -304,12 +339,13 @@ impl<'a> Grid<'a> {
         self.activity
     }
 
-    /// FNV-1a hash of both boards. A repeat within the last few frames means
-    /// the board has fallen into a short cycle (dead, still life, blinker …) —
-    /// the cue that the interesting transient is over, used by `maybe_advance`.
+    /// FNV-1a hash of channel A. A repeat within the last few frames means the
+    /// board has fallen into a short cycle (dead, still life, blinker …) — the
+    /// cue that the interesting transient is over, used by `maybe_advance`.
+    /// Channel A only: a random channel-B background would never let it repeat.
     pub fn fingerprint(&self) -> u64 {
         let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-        for &c in self.state_a.iter().chain(self.state_b.iter()) {
+        for &c in self.state_a.iter() {
             h = (h ^ c as u64).wrapping_mul(0x0000_0100_0000_01b3);
         }
         h
@@ -347,9 +383,9 @@ impl<'a> Grid<'a> {
         color.g = color.g.saturating_add(ember.g);
         color.b = color.b.saturating_add(ember.b);
 
-        if self.config.two_channel {
-            // Second board is a full-colour accent in its own palette, held at
-            // half brightness so board A stays dominant and the pair fits the
+        if self.config.rule_b.is_some() {
+            // Channel B is a full-colour accent in its own palette, held at
+            // half brightness so channel A stays dominant and the pair fits the
             // brightness budget. (viz idea #5)
             let ember_b = palette::scale(
                 palette::color(self.config.palette_b, self.heat_b[idx], x_u, y_u),
@@ -395,7 +431,9 @@ mod tests {
             scale: 0.01,
             ..Point::default()
         }];
-        let grid = Grid::builder(&mut points).seed(Seed::Empty).build();
+        let grid = Grid::builder(&mut points)
+            .rule(Rule::Conway { seed: Seed::Empty })
+            .build();
         let near = grid.render_led(0).r;
         let far = grid.render_led(N_LEDS / 2).r;
         assert!(
@@ -411,7 +449,9 @@ mod tests {
     #[test]
     fn seeded_board_lights_up_and_keeps_burning_after_update() {
         let mut points = [];
-        let mut grid = Grid::builder(&mut points).seed(Seed::Glider).build();
+        let mut grid = Grid::builder(&mut points)
+            .rule(Rule::Conway { seed: Seed::Glider })
+            .build();
         assert!(
             grid.brightness() > 0,
             "a seeded board should light some LEDs"
@@ -426,7 +466,9 @@ mod tests {
     #[test]
     fn reseed_swaps_the_pattern() {
         let mut points = [];
-        let mut grid = Grid::builder(&mut points).seed(Seed::Glider).build();
+        let mut grid = Grid::builder(&mut points)
+            .rule(Rule::Conway { seed: Seed::Glider })
+            .build();
         let lit = grid.brightness();
         grid.reseed(Seed::Empty);
         assert_eq!(grid.brightness(), 0, "reseeding to Empty clears the board");
@@ -444,7 +486,9 @@ mod tests {
             scale: 100.0,
             ..Point::default()
         }];
-        let grid = Grid::builder(&mut points).seed(Seed::Empty).build();
+        let grid = Grid::builder(&mut points)
+            .rule(Rule::Conway { seed: Seed::Empty })
+            .build();
         assert!(
             grid.brightness() > BRIGHTNESS_BUDGET,
             "test setup should exceed the budget before clipping"
@@ -462,13 +506,19 @@ mod tests {
     #[test]
     fn nonperiodic_conway_seed_auto_advances_on_timeout() {
         let mut points = [];
-        let mut grid = Grid::builder(&mut points).seed(Seed::Acorn).build();
+        let mut grid = Grid::builder(&mut points)
+            .rule(Rule::Conway { seed: Seed::Acorn })
+            .build();
         for _ in 0..=MAX_FRAMES {
             grid.update();
         }
-        assert_eq!(
-            grid.config().seed,
-            Seed::RPentomino,
+        assert!(
+            matches!(
+                grid.config().rule,
+                Rule::Conway {
+                    seed: Seed::RPentomino
+                }
+            ),
             "Acorn should hand off to the next nonperiodic seed by the timeout"
         );
     }
@@ -476,13 +526,14 @@ mod tests {
     #[test]
     fn periodic_seed_is_left_running() {
         let mut points = [];
-        let mut grid = Grid::builder(&mut points).seed(Seed::Toad).build();
+        let mut grid = Grid::builder(&mut points)
+            .rule(Rule::Conway { seed: Seed::Toad })
+            .build();
         for _ in 0..=MAX_FRAMES {
             grid.update();
         }
-        assert_eq!(
-            grid.config().seed,
-            Seed::Toad,
+        assert!(
+            matches!(grid.config().rule, Rule::Conway { seed: Seed::Toad }),
             "an oscillator seed should never be auto-advanced"
         );
     }

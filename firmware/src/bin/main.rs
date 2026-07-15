@@ -33,54 +33,65 @@ fn main() -> ! {
 
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
-    // Three test masses orbiting the central well. Each starts offset from
-    // centre with a tangential velocity (perpendicular to the radius) so it
-    // orbits rather than plunges; bright heads over palette-coloured tails.
+    // Four fat particles bouncing in a box; elastic collisions spark the heat
+    // buffer on impact, flaring through the palette. Distinct head colours make
+    // it easy to see who hit whom.
     let mut points = [
         Point {
-            x: 0.5,
-            y: 0.15,
-            dx: 0.035,
-            dy: 0.0,
-            scale: 0.008,
+            x: 0.20,
+            y: 0.30,
+            dx: 0.018,
+            dy: 0.011,
+            scale: 0.02,
+            color: RGB8 {
+                r: 90,
+                g: 40,
+                b: 40,
+            },
+        },
+        Point {
+            x: 0.70,
+            y: 0.60,
+            dx: -0.015,
+            dy: 0.013,
+            scale: 0.02,
+            color: RGB8 {
+                r: 40,
+                g: 90,
+                b: 40,
+            },
+        },
+        Point {
+            x: 0.50,
+            y: 0.85,
+            dx: 0.012,
+            dy: -0.017,
+            scale: 0.02,
+            color: RGB8 {
+                r: 40,
+                g: 40,
+                b: 90,
+            },
+        },
+        Point {
+            x: 0.85,
+            y: 0.20,
+            dx: -0.014,
+            dy: 0.016,
+            scale: 0.02,
             color: RGB8 {
                 r: 90,
                 g: 90,
-                b: 90,
-            },
-        },
-        Point {
-            x: 0.5,
-            y: 0.85,
-            dx: -0.030,
-            dy: 0.0,
-            scale: 0.008,
-            color: RGB8 {
-                r: 90,
-                g: 55,
-                b: 20,
-            },
-        },
-        Point {
-            x: 0.20,
-            y: 0.5,
-            dx: 0.0,
-            dy: 0.040,
-            scale: 0.008,
-            color: RGB8 {
-                r: 40,
-                g: 70,
-                b: 90,
+                b: 40,
             },
         },
     ];
     // Inert substrate (empty Conway board) so the heat buffer carries only the
-    // comet trails; gravity drives the particle field on top.
+    // collision sparks; the bouncing particle field runs on top.
     let mut grid = Grid::builder(&mut points)
-        .rule(Rule::Conway)
-        .seed(Seed::Empty)
+        .rule(Rule::Conway { seed: Seed::Empty })
         .palette(Palette::Fire)
-        .gravity(true)
+        .collide(true)
         .build();
 
     let mut buf = smart_led_buffer!(N_LEDS);

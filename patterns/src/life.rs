@@ -1,14 +1,16 @@
 //! Board evolution rules and the heat (afterglow) buffer.
 
-use crate::{COLS, N_LEDS, ROWS};
+use crate::{COLS, N_LEDS, ROWS, Seed};
 use libm::{logf, sqrtf};
 
 /// How the board evolves each frame. Rule-specific tuning rides along in the
-/// variant, so a rule is only ever handed the knobs it actually uses.
+/// variant, so a rule is only ever handed the knobs it actually uses — and a
+/// rule fully describes a channel, which is what lets the two channels run
+/// different rules.
 #[derive(Clone, Copy, PartialEq)]
 pub enum Rule {
-    /// Conway's Game of Life, B3/S23.
-    Conway,
+    /// Conway's Game of Life, B3/S23, started from `seed`.
+    Conway { seed: Seed },
     /// Spreading fire on an excitable medium: fronts travel and can't
     /// back-propagate into the hot ash they leave, so they curl into rings and
     /// spirals. `lightning` is the reciprocal spark chance per idle cell
@@ -22,6 +24,8 @@ pub enum Rule {
 }
 
 impl Rule {
+    /// Conway seeded with a methuselah worth watching evolve.
+    pub const DEFAULT_CONWAY: Rule = Rule::Conway { seed: Seed::Acorn };
     /// Wildfire with a sensible spark rate and refractory window.
     pub const DEFAULT_WILDFIRE: Rule = Rule::Wildfire {
         lightning: 4096,
@@ -54,7 +58,7 @@ pub(crate) fn step(
     pond: &mut Pond,
 ) -> [bool; N_LEDS] {
     match rule {
-        Rule::Conway => conway_update(state),
+        Rule::Conway { .. } => conway_update(state),
         Rule::Wildfire {
             lightning,
             refractory,
