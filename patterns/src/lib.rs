@@ -30,6 +30,8 @@ const CHANNEL_B_SHIFT: (usize, usize) = (COLS / 2, ROWS / 2);
 pub struct Config {
     pub seed: Seed,
     pub palette: Palette,
+    /// Palette for the second board's ember contribution. (viz idea #5)
+    pub palette_b: Palette,
     pub rule: Rule,
     /// Flames pick up the drifting point field's hue. (viz idea #1)
     pub tint_by_field: bool,
@@ -44,6 +46,7 @@ impl Default for Config {
         Config {
             seed: Seed::Glider,
             palette: Palette::Fire,
+            palette_b: Palette::Ice,
             rule: Rule::Conway,
             tint_by_field: false,
             reactive: false,
@@ -61,6 +64,9 @@ pub struct Grid<'a> {
     state_b: [bool; N_LEDS],
     heat_b: [u8; N_LEDS],
     activity: u8,
+    /// Expanding-ripple state for each board under `Rule::Raindrops`.
+    pond_a: life::Pond,
+    pond_b: life::Pond,
 }
 
 pub struct GridBuilder<'a> {
@@ -75,6 +81,10 @@ impl<'a> GridBuilder<'a> {
     }
     pub fn palette(mut self, palette: Palette) -> Self {
         self.config.palette = palette;
+        self
+    }
+    pub fn palette_b(mut self, palette: Palette) -> Self {
+        self.config.palette_b = palette;
         self
     }
     pub fn rule(mut self, rule: Rule) -> Self {
@@ -113,6 +123,8 @@ impl<'a> GridBuilder<'a> {
             state_b,
             heat_b,
             activity: 0,
+            pond_a: life::Pond::new(),
+            pond_b: life::Pond::new(),
         }
     }
 }
@@ -138,14 +150,26 @@ impl<'a> Grid<'a> {
         self.points.iter_mut().for_each(Point::mv);
 
         let current = self.state_a;
-        let next = life::step(self.config.rule, &current, &mut self.rng);
+        let next = life::step(
+            self.config.rule,
+            &current,
+            &self.heat_a,
+            &mut self.rng,
+            &mut self.pond_a,
+        );
         self.activity = life::churn(&current, &next);
         life::decay_heat(&mut self.heat_a, &next);
         self.state_a = next;
 
         if self.config.two_channel {
             let current = self.state_b;
-            let next = life::step(self.config.rule, &current, &mut self.rng);
+            let next = life::step(
+                self.config.rule,
+                &current,
+                &self.heat_b,
+                &mut self.rng,
+                &mut self.pond_b,
+            );
             life::decay_heat(&mut self.heat_b, &next);
             self.state_b = next;
         }
@@ -167,6 +191,23 @@ impl<'a> Grid<'a> {
 
     pub fn config(&self) -> Config {
         self.config
+    }
+
+    /// Fraction of channel-A cells that changed on the last `update`, `0..=255`.
+    /// Zero means the board has died or frozen — a cue to reseed.
+    pub fn activity(&self) -> u8 {
+        self.activity
+    }
+
+    /// FNV-1a hash of both boards. A repeat within the last few frames means
+    /// the board has fallen into a short cycle (dead, still life, blinker …) —
+    /// the cue that the interesting transient is over. (see `main` reseed loop)
+    pub fn fingerprint(&self) -> u64 {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for &c in self.state_a.iter().chain(self.state_b.iter()) {
+            h = (h ^ c as u64).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        h
     }
 
     /// map a snake to a grid:
@@ -202,9 +243,16 @@ impl<'a> Grid<'a> {
         color.b = color.b.saturating_add(ember.b);
 
         if self.config.two_channel {
-            color.b = color
-                .b
-                .saturating_add((self.heat_b[idx] as u16 * 90 / 255) as u8);
+            // Second board is a full-colour accent in its own palette, held at
+            // half brightness so board A stays dominant and the pair fits the
+            // brightness budget. (viz idea #5)
+            let ember_b = palette::scale(
+                palette::color(self.config.palette_b, self.heat_b[idx], x_u, y_u),
+                128,
+            );
+            color.r = color.r.saturating_add(ember_b.r);
+            color.g = color.g.saturating_add(ember_b.g);
+            color.b = color.b.saturating_add(ember_b.b);
         }
         color
     }
